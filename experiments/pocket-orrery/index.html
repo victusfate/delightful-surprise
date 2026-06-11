@@ -30,9 +30,29 @@ function gravityAccel(target, bodies, G) {
   return { ax, ay };
 }
 
-// Semi-implicit Euler at fixed dt. Mutates the bodies' v/x in place and
-// returns the (possibly shorter) array. bodies[0] is the sun, fixed: true.
-function stepBodies(bodies, dt, G) {
+// Mass-summing, momentum-conserving merge. Radius conserves volume, i.e.
+// radius ∝ mass^(1/3) at uniform density. A fixed partner stays pinned.
+function mergeBodies(a, b) {
+  const mass = a.mass + b.mass;
+  const fixed = !!(a.fixed || b.fixed);
+  const pin = a.fixed ? a : b.fixed ? b : null;
+  return {
+    x: pin ? pin.x : (a.mass * a.x + b.mass * b.x) / mass,
+    y: pin ? pin.y : (a.mass * a.y + b.mass * b.y) / mass,
+    vx: fixed ? 0 : (a.mass * a.vx + b.mass * b.vx) / mass,
+    vy: fixed ? 0 : (a.mass * a.vy + b.mass * b.vy) / mass,
+    mass,
+    radius: Math.cbrt(a.radius ** 3 + b.radius ** 3),
+    hue: (a.mass >= b.mass ? a : b).hue,
+    fixed,
+  };
+}
+
+// Semi-implicit Euler at fixed dt, then collision merges, then culling.
+// Mutates the bodies' v/x in place and returns the (possibly shorter)
+// array. bodies[0] is the sun, fixed: true.
+// opts: { cullRadius?, onMerge?(merged, a, b) }
+function stepBodies(bodies, dt, G, opts = {}) {
   const acc = bodies.map(b => b.fixed ? null : gravityAccel(b, bodies, G));
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
@@ -42,10 +62,40 @@ function stepBodies(bodies, dt, G) {
     b.x += b.vx * dt;
     b.y += b.vy * dt;
   }
+  // collisions: merge any overlapping pair, repeat until stable
+  let merged = true;
+  while (merged) {
+    merged = false;
+    outer:
+    for (let i = 0; i < bodies.length; i++) {
+      for (let j = i + 1; j < bodies.length; j++) {
+        const a = bodies[i], b = bodies[j];
+        const d = Math.hypot(b.x - a.x, b.y - a.y);
+        if (d < a.radius + b.radius) {
+          const m = mergeBodies(a, b);
+          bodies.splice(j, 1);
+          bodies[i] = m;
+          if (opts.onMerge) opts.onMerge(m, a, b);
+          merged = true;
+          break outer;
+        }
+      }
+    }
+  }
+  // culling: drop escapees beyond cullRadius from the sun
+  if (opts.cullRadius) {
+    const s = bodies[0];
+    for (let i = bodies.length - 1; i >= 1; i--) {
+      const b = bodies[i];
+      if (!b.fixed && Math.hypot(b.x - s.x, b.y - s.y) > opts.cullRadius) {
+        bodies.splice(i, 1);
+      }
+    }
+  }
   return bodies;
 }
 
-globalThis.__logic = { gravityAccel, stepBodies };
+globalThis.__logic = { gravityAccel, stepBodies, mergeBodies };
 })();
 </script>
 </body>
