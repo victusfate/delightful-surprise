@@ -114,3 +114,60 @@ test('isClosed: damping breaks closure at T', () => {
   };
   assert.equal(isClosed(damped, period({ p: 2, q: 3 }), 1e-6), false);
 });
+
+// ---------- slice 4: makeParams and the exported surface ----------
+
+test('mulberry32: deterministic per seed, values in [0, 1)', () => {
+  const { mulberry32 } = loadLogic(HTML);
+  const a = mulberry32(42), b = mulberry32(42), c = mulberry32(7);
+  const seqA = [a(), a(), a()], seqB = [b(), b(), b()], seqC = [c(), c(), c()];
+  assert.deepEqual(seqA, seqB, 'same seed, same sequence');
+  assert.notDeepEqual(seqA, seqC, 'different seed, different sequence');
+  for (const v of [...seqA, ...seqC]) assert.ok(v >= 0 && v < 1, `value ${v} out of [0,1)`);
+});
+
+test('makeParams: deterministic given the rng, varies across seeds', () => {
+  const { makeParams, mulberry32, RATIOS } = loadLogic(HTML);
+  const fifth = RATIOS.find(r => r.name === 'fifth');
+  const p1 = makeParams(fifth, { damping: 0.04 }, mulberry32(5));
+  const p2 = makeParams(fifth, { damping: 0.04 }, mulberry32(5));
+  const p3 = makeParams(fifth, { damping: 0.04 }, mulberry32(6));
+  assert.deepEqual(p1, p2, 'same seed must reproduce the same swing');
+  assert.notDeepEqual(p1, p3, 'a new seed must give a new swing');
+});
+
+test('makeParams: f-quotient of the two x terms equals p / (q + detune)', () => {
+  const { makeParams, mulberry32, RATIOS } = loadLogic(HTML);
+  for (const name of ['fifth', 'drift', 'octave']) {
+    const ratio = RATIOS.find(r => r.name === name);
+    const params = makeParams(ratio, { damping: 0.04 }, mulberry32(11));
+    const [t1, t2] = params.xTerms;
+    const want = ratio.p / (ratio.q + (ratio.detune ?? 0));
+    assert.ok(Math.abs(t1.f / t2.f - want) < 1e-12,
+      `${name}: x f-quotient ${t1.f / t2.f}, want ${want}`);
+  }
+});
+
+test('makeParams: opts.damping lands on every term; amplitudes positive and bounded', () => {
+  const { makeParams, mulberry32, RATIOS } = loadLogic(HTML);
+  const fifth = RATIOS.find(r => r.name === 'fifth');
+  for (const damping of [0, 0.025, 0.08]) {
+    const { xTerms, yTerms } = makeParams(fifth, { damping }, mulberry32(3));
+    assert.equal(xTerms.length, 2);
+    assert.equal(yTerms.length, 2);
+    for (const t of [...xTerms, ...yTerms]) {
+      assert.equal(t.d, damping, 'damping must pass through to each term');
+      assert.ok(t.A > 0 && t.A <= 1, `amplitude ${t.A} out of (0, 1]`);
+      assert.ok(t.phi >= 0 && t.phi < TAU, `phase ${t.phi} out of [0, 2π)`);
+      assert.ok(t.f > 0, 'frequency must be positive');
+    }
+  }
+});
+
+test('structure: logic block exports the full documented surface', () => {
+  const logic = loadLogic(HTML);
+  for (const fn of ['pendulumPoint', 'makeParams', 'isClosed', 'period', 'gcd', 'mulberry32']) {
+    assert.equal(typeof logic[fn], 'function', `${fn} must be a function`);
+  }
+  assert.ok(Array.isArray(logic.RATIOS), 'RATIOS must be an array');
+});
