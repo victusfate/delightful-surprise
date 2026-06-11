@@ -4,8 +4,49 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>ink drift — ink in dark water</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #01030a; }
+  canvas { display: block; cursor: crosshair; }
+  #ui {
+    position: fixed; inset: 0; pointer-events: none;
+    font-family: Georgia, 'Times New Roman', serif; color: #c9d6ff;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; transition: opacity 2.5s ease; text-shadow: 0 0 18px rgba(90,140,255,.45);
+  }
+  #ui h1 { font-size: 2.6rem; font-weight: normal; letter-spacing: .4em; margin: 0 0 .6rem; opacity: .9; }
+  #ui p { font-size: 1rem; letter-spacing: .12em; opacity: .6; margin: .25rem 0; }
+  #ui.hidden { opacity: 0; }
+  #swatches {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 14px; align-items: center;
+  }
+  #swatches button {
+    width: 26px; height: 26px; border-radius: 50%; border: 1px solid rgba(160,180,255,.25);
+    padding: 0; cursor: pointer; opacity: .55;
+    transition: opacity .3s ease, transform .3s ease, box-shadow .3s ease;
+  }
+  #swatches button.active {
+    opacity: 1; transform: scale(1.25);
+    box-shadow: 0 0 14px rgba(200,220,255,.45);
+    border-color: rgba(220,232,255,.8);
+  }
+  #hint {
+    position: fixed; bottom: 22px; right: 20px; pointer-events: none;
+    font-family: Georgia, serif; font-size: .78rem; letter-spacing: .1em;
+    color: rgba(170,190,255,.45);
+  }
+</style>
 </head>
 <body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h1>ink drift</h1>
+  <p>hold and drag to pour ink into the water</p>
+  <p>comb the current — then let it be</p>
+</div>
+<div id="swatches"></div>
+<div id="hint">[1&#8211;6] ink &nbsp; [c]lear &nbsp; [s]ave</div>
+
 <script id="logic">
 'use strict';
 // Pure, DOM-free math — extracted and unit-tested in Node via
@@ -74,6 +115,325 @@ const PALETTES = [
 
 globalThis.__logic = { makeNoise, fbm, curl, stepParticle, PALETTES };
 })();
+</script>
+<script>
+'use strict';
+const { makeNoise, fbm, curl, stepParticle, PALETTES } = globalThis.__logic;
+
+// ---------- tuning ----------
+const MAX_INK   = 14000;     // ink particle ring buffer
+const N_MOTES   = 320;       // ambient motes that keep empty water alive
+const MAX       = MAX_INK + N_MOTES;
+const CELL      = 26;        // px between current-field samples
+const NS        = 1 / 230;   // px -> noise units (feature size ~230 px)
+const EPS       = 0.12;      // curl finite-difference step, noise units
+const GAIN      = 7;         // field strength
+const JITTER    = 0.22;      // per-step diffusion, px
+const DRAG      = 0.93;      // per-frame carried-motion damping (at 60 fps)
+const COMB_R    = 110;       // comb radius, px
+const COMB_K    = 0.5;       // comb impulse blend
+const POUR_RATE = 34;        // particles per frame while held (at 60 fps)
+const BURST_N   = 220;       // particles on pointerdown
+const SETTLE_A  = 0.016;     // per-frame fade toward the water
+const SETTLE_CLEAN_A = 0.06; // periodic deeper fade (kills 8-bit ghosting)
+const EDGE      = 36;        // kill margin outside the viewport
+
+const TAU = Math.PI * 2;
+const rand = (a, b) => a + Math.random() * (b - a);
+
+// ---------- canvas ----------
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+let bg = null;             // offscreen water background (settle fades toward it)
+let gw = 0, gh = 0;        // current-field grid dims
+let GVX = null, GVY = null;
+
+function makeBackground() {
+  bg = document.createElement('canvas');
+  bg.width = canvas.width; bg.height = canvas.height;
+  const b = bg.getContext('2d');
+  b.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const lin = b.createLinearGradient(0, 0, 0, H);
+  lin.addColorStop(0, '#01030a');
+  lin.addColorStop(0.45, '#051124');
+  lin.addColorStop(1, '#01040c');
+  b.fillStyle = lin;
+  b.fillRect(0, 0, W, H);
+  // faint cool glow in the upper water
+  const glow = b.createRadialGradient(W * 0.5, H * 0.34, 0, W * 0.5, H * 0.34, Math.max(W, H) * 0.62);
+  glow.addColorStop(0, 'rgba(24,52,110,0.14)');
+  glow.addColorStop(1, 'rgba(24,52,110,0)');
+  b.fillStyle = glow;
+  b.fillRect(0, 0, W, H);
+  // vignette
+  const vig = b.createRadialGradient(W * 0.5, H * 0.5, Math.min(W, H) * 0.35, W * 0.5, H * 0.5, Math.max(W, H) * 0.78);
+  vig.addColorStop(0, 'rgba(0,0,6,0)');
+  vig.addColorStop(1, 'rgba(0,0,6,0.5)');
+  b.fillStyle = vig;
+  b.fillRect(0, 0, W, H);
+}
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  gw = Math.ceil(W / CELL) + 2;
+  gh = Math.ceil(H / CELL) + 2;
+  GVX = new Float32Array(gw * gh);
+  GVY = new Float32Array(gw * gh);
+  makeBackground();
+  ctx.drawImage(bg, 0, 0, W, H);
+}
+window.addEventListener('resize', resize);
+
+// ---------- the current (curl-noise field) ----------
+// Two seeded fbm fields, slowly drifting in different directions and
+// crossfaded over time, so the water keeps breathing and never repeats.
+// Curl is linear in the scalar field, so the blend stays divergence-free.
+const noiseA = makeNoise(1137);
+const noiseB = makeNoise(8423);
+
+function refreshCurrent(t) {
+  const wA = 0.5 + 0.5 * Math.sin(t * 0.05);
+  const wB = 1 - wA;
+  const axo = 41.7 + t * 0.043, ayo = 7.9  + t * 0.029;
+  const bxo = 93.1 - t * 0.031, byo = 55.3 + t * 0.047;
+  const field = (x, y) =>
+    wA * fbm(noiseA, x + axo, y + ayo, 3) +
+    wB * fbm(noiseB, x + bxo, y + byo, 3);
+  for (let j = 0; j < gh; j++) {
+    const ny = (j - 1) * CELL * NS;
+    for (let i = 0; i < gw; i++) {
+      const v = curl(field, (i - 1) * CELL * NS, ny, EPS);
+      const k = j * gw + i;
+      GVX[k] = v.vx * GAIN;
+      GVY[k] = v.vy * GAIN;
+    }
+  }
+}
+
+// Bilinear sample of the current at a point (CSS px).
+function sampleVX(gx, gy, i0, j0, fx, fy) {
+  const k = j0 * gw + i0;
+  const a = GVX[k], b = GVX[k + 1], c = GVX[k + gw], d = GVX[k + gw + 1];
+  return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
+}
+function sampleVY(gx, gy, i0, j0, fx, fy) {
+  const k = j0 * gw + i0;
+  const a = GVY[k], b = GVY[k + 1], c = GVY[k + gw], d = GVY[k + gw + 1];
+  return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
+}
+
+// ---------- ink (struct-of-arrays ring buffer) ----------
+// Kinematics mirror the unit-tested stepParticle (Verlet: velocity = x - px),
+// inlined over typed arrays so thousands of particles stay cheap.
+const X  = new Float32Array(MAX);
+const Y  = new Float32Array(MAX);
+const PX = new Float32Array(MAX);
+const PY = new Float32Array(MAX);
+const LIFE  = new Float32Array(MAX); // seconds remaining; <= 0 means dead
+const LIFE0 = new Float32Array(MAX);
+const COL   = new Uint8Array(MAX);   // 0..17 ink color, 18 = mote
+let head = 0; // next ink slot (ring)
+
+const COLORS = PALETTES.flatMap(p => p.inks); // 18 inks
+const MOTE_COL = 18;
+
+function spawnInk(x, y, ivx, ivy, colorIdx) {
+  const i = head;
+  head = (head + 1) % MAX_INK;
+  X[i] = x; Y[i] = y;
+  PX[i] = x - ivx; PY[i] = y - ivy;
+  LIFE0[i] = rand(12, 20);
+  LIFE[i] = LIFE0[i];
+  COL[i] = colorIdx;
+}
+
+function spawnMote(i) {
+  X[i] = rand(0, W); Y[i] = rand(0, H);
+  PX[i] = X[i]; PY[i] = Y[i];
+  LIFE0[i] = rand(6, 14);
+  LIFE[i] = LIFE0[i];
+  COL[i] = MOTE_COL;
+}
+
+// ---------- swatches ----------
+const swatchRow = document.getElementById('swatches');
+let active = 2; // lagoon first — it reads beautifully on dark water
+const swatchEls = PALETTES.map((p, i) => {
+  const b = document.createElement('button');
+  b.title = `${p.name} [${i + 1}]`;
+  b.style.background = `radial-gradient(circle at 32% 30%, ${p.inks[2]}, ${p.inks[0]} 55%, ${p.inks[1]})`;
+  b.addEventListener('pointerdown', e => { e.stopPropagation(); setActive(i); });
+  swatchRow.appendChild(b);
+  return b;
+});
+function setActive(i) {
+  active = i;
+  swatchEls.forEach((el, j) => el.classList.toggle('active', j === i));
+}
+setActive(active);
+
+// ---------- input ----------
+let held = false, poured = false;
+let mx = 0, my = 0, lmx = 0, lmy = 0; // pointer pos, last pos
+let pvx = 0, pvy = 0;                 // smoothed pointer velocity, px/s
+
+function pickInk() {
+  return active * 3 + ((Math.random() * 3) | 0);
+}
+
+canvas.addEventListener('pointerdown', e => {
+  held = true;
+  mx = lmx = e.clientX; my = lmy = e.clientY;
+  pvx = pvy = 0;
+  canvas.setPointerCapture(e.pointerId);
+  for (let n = 0; n < BURST_N; n++) {
+    const a = rand(0, TAU), r = Math.sqrt(Math.random()) * 9, sp = rand(0.3, 2.4);
+    spawnInk(mx + Math.cos(a) * r, my + Math.sin(a) * r,
+             Math.cos(a) * sp, Math.sin(a) * sp, pickInk());
+  }
+  if (!poured) { poured = true; document.getElementById('ui').classList.add('hidden'); }
+});
+canvas.addEventListener('pointermove', e => {
+  mx = e.clientX; my = e.clientY;
+});
+const release = () => { held = false; pvx = pvy = 0; };
+canvas.addEventListener('pointerup', release);
+canvas.addEventListener('pointercancel', release);
+
+window.addEventListener('keydown', e => {
+  const n = parseInt(e.key, 10);
+  if (n >= 1 && n <= PALETTES.length) {
+    setActive(n - 1);
+  } else if (e.key === 'c') {
+    for (let i = 0; i < MAX_INK; i++) LIFE[i] = 0;
+    ctx.drawImage(bg, 0, 0, W, H);
+  } else if (e.key === 's') {
+    const a = document.createElement('a');
+    a.download = 'ink-drift.png';
+    a.href = canvas.toDataURL('image/png');
+    a.click();
+  }
+});
+
+// ---------- render buckets (batched strokes: one path per color/alpha) ----------
+const FADE_A = [0.38, 0.24, 0.11];                      // by remaining life
+const buckets = Array.from({ length: COLORS.length * 3 + 1 }, () => []);
+const MOTE_BUCKET = COLORS.length * 3;
+const MOTE_STYLE = 'rgba(150,172,225,1)';
+
+// ---------- main loop ----------
+let last = 0, frameN = 0;
+function frame(ms) {
+  const t = ms / 1000;
+  const dt = Math.min(0.05, t - last || 0.016);
+  last = t;
+  frameN++;
+
+  refreshCurrent(t);
+
+  // pointer velocity (smoothed) for the comb
+  if (held) {
+    const ivx = (mx - lmx) / dt, ivy = (my - lmy) / dt;
+    pvx += (ivx - pvx) * 0.5;
+    pvy += (ivy - pvy) * 0.5;
+  }
+
+  // pour: continuous emission along the drag segment
+  if (held) {
+    const n = Math.max(1, Math.round(POUR_RATE * dt * 60));
+    for (let k = 0; k < n; k++) {
+      const f = k / n;
+      const ex = lmx + (mx - lmx) * f + rand(-3.5, 3.5);
+      const ey = lmy + (my - lmy) * f + rand(-3.5, 3.5);
+      spawnInk(ex, ey, pvx * dt * 0.25 + rand(-0.4, 0.4),
+                       pvy * dt * 0.25 + rand(-0.4, 0.4), pickInk());
+    }
+  }
+  lmx = mx; lmy = my;
+
+  // settle: fade toward the water; periodic deeper pass defeats the
+  // 8-bit rounding that would otherwise leave permanent ghosts.
+  ctx.globalAlpha = (frameN % 10 === 0) ? SETTLE_CLEAN_A : SETTLE_A;
+  ctx.drawImage(bg, 0, 0, W, H);
+  ctx.globalAlpha = 1;
+
+  // advect + bucket
+  for (const b of buckets) b.length = 0;
+  const dragF = Math.pow(DRAG, dt * 60);
+  const combOn = held && (pvx !== 0 || pvy !== 0);
+  const R2 = COMB_R * COMB_R;
+  for (let i = 0; i < MAX; i++) {
+    if (LIFE[i] <= 0) { if (COL[i] === MOTE_COL) spawnMote(i); else continue; }
+    const x = X[i], y = Y[i];
+    // bilinear current sample
+    let gx = x / CELL + 1, gy = y / CELL + 1;
+    if (gx < 0) gx = 0; else if (gx > gw - 2) gx = gw - 2;
+    if (gy < 0) gy = 0; else if (gy > gh - 2) gy = gh - 2;
+    const i0 = gx | 0, j0 = gy | 0, fx = gx - i0, fy = gy - j0;
+    let ivx = (x - PX[i]) * dragF + sampleVX(gx, gy, i0, j0, fx, fy) * dt
+            + (Math.random() - 0.5) * JITTER;
+    let ivy = (y - PY[i]) * dragF + sampleVY(gx, gy, i0, j0, fx, fy) * dt
+            + (Math.random() - 0.5) * JITTER;
+    // comb: blend the drag impulse into nearby ink
+    if (combOn) {
+      const dx = x - mx, dy = y - my, d2 = dx * dx + dy * dy;
+      if (d2 < R2) {
+        const w = (1 - d2 / R2) * COMB_K;
+        ivx += pvx * dt * w;
+        ivy += pvy * dt * w;
+      }
+    }
+    PX[i] = x; PY[i] = y;
+    X[i] = x + ivx; Y[i] = y + ivy;
+    LIFE[i] -= dt;
+    if (X[i] < -EDGE || X[i] > W + EDGE || Y[i] < -EDGE || Y[i] > H + EDGE) {
+      LIFE[i] = 0;
+      continue;
+    }
+    if (COL[i] === MOTE_COL) {
+      buckets[MOTE_BUCKET].push(i);
+    } else {
+      const r = LIFE[i] / LIFE0[i];
+      buckets[COL[i] * 3 + (r > 0.6 ? 0 : r > 0.25 ? 1 : 2)].push(i);
+    }
+  }
+
+  // draw: one beginPath/stroke per non-empty bucket
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 1.5;
+  for (let bi = 0; bi < buckets.length; bi++) {
+    const idx = buckets[bi];
+    if (idx.length === 0) continue;
+    if (bi === MOTE_BUCKET) {
+      ctx.strokeStyle = MOTE_STYLE;
+      ctx.globalAlpha = 0.08;
+      ctx.lineWidth = 1;
+    } else {
+      ctx.strokeStyle = COLORS[(bi / 3) | 0];
+      ctx.globalAlpha = FADE_A[bi % 3];
+      ctx.lineWidth = 1.3;
+    }
+    ctx.beginPath();
+    for (let k = 0; k < idx.length; k++) {
+      const i = idx[k];
+      ctx.moveTo(PX[i], PY[i]);
+      ctx.lineTo(X[i], Y[i]);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  requestAnimationFrame(frame);
+}
+
+resize();
+for (let i = MAX_INK; i < MAX; i++) spawnMote(i);
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>
