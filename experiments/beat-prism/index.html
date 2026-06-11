@@ -278,6 +278,55 @@ function mulberry32(seed) {
 // grid predicts beats in audible time.
 const latencyMs = (fftSize, sampleRate) => (fftSize / 2 / sampleRate) * 1000 + 16;
 
+// Predictive beat grid — a phase-locked clock at the estimated BPM.
+// anchorMs is a reference beat instant (audible time); beatBase its
+// absolute beat number, kept monotone across re-locks so bar counting
+// survives. Call with onsetMs on detection, with onsetMs = null as a
+// per-frame tick (free-run + confidence-lapse bookkeeping). Pure.
+function stepGrid(grid, onsetMs, bpm, nowMs, opts = {}) {
+  const lockWindowMs = opts.lockWindowMs ?? 90;
+  const lerp = opts.lerp ?? 0.35;
+  const lapseMs = opts.lapseMs ?? 4000;
+  const latency = opts.latencyMs ?? 0;
+  const minOnsets = opts.minOnsets ?? 8;
+  const g = {
+    anchorMs: grid?.anchorMs ?? null,
+    periodMs: grid?.periodMs ?? null,
+    beatBase: grid?.beatBase ?? 0,
+    onsetCount: grid?.onsetCount ?? 0,
+    lastOnsetMs: grid?.lastOnsetMs ?? -Infinity,
+    confident: grid?.confident ?? false,
+  };
+  if (bpm != null) g.periodMs = 60000 / bpm;
+  if (onsetMs != null) {
+    const t = onsetMs - latency;          // detection time → audible time
+    g.onsetCount += 1;
+    g.lastOnsetMs = t;
+    if (g.anchorMs === null || g.periodMs === null) {
+      g.anchorMs = t;                     // first usable onset seeds the phase
+    } else {
+      const k = Math.round((t - g.anchorMs) / g.periodMs);
+      const pred = g.anchorMs + k * g.periodMs;
+      const off = t - pred;
+      if (Math.abs(off) <= lockWindowMs) {
+        g.anchorMs = pred + lerp * off;   // re-lock: ease phase toward the onset
+        g.beatBase += k;
+      } else if (!g.confident) {
+        g.anchorMs = t;                   // unconfident clock re-anchors freely
+        g.beatBase += k;
+      }
+      // confident clock ignores off-grid onsets entirely
+    }
+  }
+  if (nowMs - g.lastOnsetMs > lapseMs) {
+    g.onsetCount = 0;                     // lapse: require fresh evidence
+    g.confident = false;
+  } else {
+    g.confident = g.onsetCount >= minOnsets && g.periodMs !== null;
+  }
+  return g;
+}
+
 // Per-strip pixel offsets for slice-glitch / v-slice, in [-max, max].
 function sliceOffsets(seed, count, maxOffset) {
   const rng = mulberry32(seed);
@@ -299,7 +348,7 @@ const ringIndex = (head, back, size) => (((head - back) % size) + size) % size;
 
 globalThis.__logic = {
   spectralFlux, bandEnergy, adaptiveThreshold, stepOnset, estimateBpm, decayPulse,
-  FX_REGISTRY, mulberry32, latencyMs, sliceOffsets, wedgeAngles, posterizeCurve, ringIndex,
+  FX_REGISTRY, mulberry32, latencyMs, stepGrid, sliceOffsets, wedgeAngles, posterizeCurve, ringIndex,
 };
 })();
 </script>
