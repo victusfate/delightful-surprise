@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { loadLogic } from '../_harness/logic.mjs';
 
 const HTML = new URL('./index.html', import.meta.url).pathname;
@@ -174,4 +175,39 @@ test('stepOnset: opts override k, window and refractoryMs', () => {
   fluxes[22] = 200; // 46 ms apart — fires with a 40 ms refractory
   const firedAt = run(stepOnset, fluxes, 23, { refractoryMs: 40 });
   assert.deepEqual(firedAt, [20, 22]);
+});
+
+// ---------- slice 5 — structural acceptance ----------
+
+test('structure: logic block exports the full documented surface', () => {
+  const logic = loadLogic(HTML);
+  const surface = ['spectralFlux', 'adaptiveThreshold', 'stepOnset',
+                   'estimateBpm', 'decayPulse', 'bandEnergy'];
+  for (const fn of surface) {
+    assert.equal(typeof logic[fn], 'function', `${fn} must be a function`);
+  }
+});
+
+test('structure: no external fetches of any kind', () => {
+  const html = readFileSync(HTML, 'utf8');
+  assert.ok(!/(?:src|href)\s*=\s*["']?\s*(?:https?:)?\/\//i.test(html),
+    'no src/href may point at a remote URL');
+  assert.ok(!/url\(\s*["']?\s*(?:https?:)?\/\//i.test(html),
+    'no CSS url() may point at a remote URL');
+  assert.ok(!/@import|fetch\(|XMLHttpRequest|navigator\.sendBeacon/.test(html),
+    'no imports or network APIs');
+});
+
+test('structure: analyser configured per design (fftSize 2048, no smoothing)', () => {
+  const html = readFileSync(HTML, 'utf8');
+  assert.match(html, /fftSize\s*=\s*2048/);
+  assert.match(html, /smoothingTimeConstant\s*=\s*0\b/);
+});
+
+test('structure: HUD has BPM readout, sensitivity slider, six chips, file input', () => {
+  const html = readFileSync(HTML, 'utf8');
+  assert.match(html, /id="bpm"/, 'BPM readout');
+  assert.match(html, /id="sens"[^>]*type="range"/, 'sensitivity slider');
+  assert.equal((html.match(/class="chip"/g) ?? []).length, 6, 'six effect chips');
+  assert.match(html, /type="file"[^>]*accept="video\/\*"/, 'video file input');
 });
