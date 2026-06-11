@@ -65,6 +65,19 @@ key hints updated and the 1–6 binding gone; logic surface complete;
 particle cap and ring size constants present; legacy chip count still 6;
 no external fetches (existing test re-covers).
 
+## Slice 6 — transport controls (design addendum, added mid-build)
+
+Pure: `formatTime(sec)` (m:ss, degenerate input → 0:00),
+`seekTarget(cur, dur, deltaSec)` (clamped; non-finite duration holds).
+
+App: transport bar above the HUD (play/pause button, time readout,
+range-input seek bar), video mode only; arrow-key seeking ±5 s /
+shift ±30 s; every seek runs resetDetector() (onset history + grid).
+
+Tests: formatTime formatting + edge cases; seekTarget clamping + edge
+cases; structural — transport/playbtn/seek/time elements, ArrowLeft /
+ArrowRight bound, app consumes both helpers.
+
 ## Out of scope
 
 Gallery (`experiments/index.html`) untouched. design.md not edited.

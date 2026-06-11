@@ -91,6 +91,19 @@ works over `file://`.
 - Keys: space, `d`, `s` unchanged; `r` shuffle on; `e` drawer; `0` all off;
   `9` all on. Keys 1–6 retired.
 
+### R4b — Transport controls (design addendum, added mid-build)
+
+- Transport bar above the HUD, shown in video mode only: play/pause
+  button, `m:ss / m:ss` elapsed/total readout, and a scrubbable seek bar
+  (click or drag).
+- Keys (video mode only): `←`/`→` jump −/+5 s, shift+`←`/`→` −/+30 s.
+  Space stays play/pause in both modes; in demo mode the transport hides.
+- Any seek clears the onset history and grid confidence; the clock
+  re-locks within a couple of bars.
+- Pure helpers in the logic block: `formatTime(sec)` and
+  `seekTarget(cur, dur, deltaSec)` (clamped to [0, dur]; degenerate
+  duration → hold position).
+
 ### R5 — Performance & caps
 
 - Offscreen buffers (feedback, smear, ghost, pixelate, noise) created once
@@ -107,7 +120,8 @@ stepOnset, estimateBpm, decayPulse.
 
 New: FX_REGISTRY, stepGrid, gridEvents, dealHand, mulberry32,
 latencyMs(fftSize, sampleRate), sliceOffsets(seed, count, maxOffset),
-wedgeAngles(n), posterizeCurve(v, levels), ringIndex(head, back, size).
+wedgeAngles(n), posterizeCurve(v, levels), ringIndex(head, back, size),
+formatTime(sec), seekTarget(cur, dur, deltaSec).
 
 No DOM, no canvas types in the logic block — it is evaluated in Node by
 `experiments/_harness/logic.mjs`.
