@@ -327,6 +327,91 @@ test('posterizeCurve: quantizes into levels, clamps input', () => {
   assert.equal(posterizeCurve(-0.5, 4), 0, 'clamps low');
 });
 
+// ---------- fx slice 2 — beat grid phase lock ----------
+
+// Feed a train of onsets through the grid, one stepGrid call per onset.
+const feedGrid = (stepGrid, times, bpm, opts) => {
+  let g = null;
+  for (const t of times) g = stepGrid(g, t, bpm, t, opts);
+  return g;
+};
+const beatTrain = (bpm, n, jitter = 0) => Array.from(
+  { length: n },
+  (_, i) => i * (60000 / bpm) + (jitter ? Math.sin(i * 7.3) * jitter : 0),
+);
+
+test('stepGrid: first onset seeds the anchor; bpm sets the period', () => {
+  const { stepGrid } = loadLogic(HTML);
+  const g = stepGrid(null, 1000, 120, 1000);
+  assert.equal(g.anchorMs, 1000);
+  assert.equal(g.periodMs, 500);
+  assert.equal(g.onsetCount, 1);
+  assert.equal(g.confident, false, 'one onset is not confidence');
+});
+
+test('stepGrid: 120 BPM train with ±10 ms jitter → confident, phase on the true grid', () => {
+  const { stepGrid } = loadLogic(HTML);
+  const g = feedGrid(stepGrid, beatTrain(120, 8, 10), 120);
+  assert.equal(g.confident, true, '8 onsets + bpm → confident');
+  // anchor must sit on the true beat closest to the last onset (3500 ms)
+  assert.ok(Math.abs(g.anchorMs - 3500) <= 25, `anchor ${g.anchorMs} near 3500`);
+});
+
+test('stepGrid: onset 40 ms late inside the ±90 ms window re-locks by lerp 0.35', () => {
+  const { stepGrid } = loadLogic(HTML);
+  let g = feedGrid(stepGrid, beatTrain(120, 8), 120);   // clean → anchor exactly 3500
+  assert.equal(g.anchorMs, 3500);
+  g = stepGrid(g, 4040, 120, 4040);                     // predicted 4000, off +40
+  assert.ok(Math.abs(g.anchorMs - 4014) < 1e-9, `anchor ${g.anchorMs} = 4000 + 0.35·40`);
+});
+
+test('stepGrid: off-grid onsets are ignored by a confident clock', () => {
+  const { stepGrid } = loadLogic(HTML);
+  let g = feedGrid(stepGrid, beatTrain(120, 8), 120);
+  const count = g.onsetCount;
+  g = stepGrid(g, 4250, 120, 4250);   // 250 ms from both neighbors — outside ±90
+  assert.equal(g.anchorMs, 3500, 'anchor untouched');
+  assert.equal(g.onsetCount, count + 1, 'onset still counted');
+  assert.equal(g.confident, true);
+});
+
+test('stepGrid: free-runs through a 3 s quiet gap without losing the clock', () => {
+  const { stepGrid } = loadLogic(HTML);
+  let g = feedGrid(stepGrid, beatTrain(120, 8), 120);
+  g = stepGrid(g, null, 120, 6400);   // frame tick 2.9 s after the last onset
+  assert.equal(g.confident, true, 'still confident inside 4 s');
+  assert.equal(g.anchorMs, 3500, 'clock untouched while free-running');
+  assert.equal(g.periodMs, 500);
+});
+
+test('stepGrid: confidence lapses after 4 s without onsets and needs 8 fresh onsets', () => {
+  const { stepGrid } = loadLogic(HTML);
+  let g = feedGrid(stepGrid, beatTrain(120, 8), 120);
+  g = stepGrid(g, null, 120, 7600);   // 4.1 s after the last onset
+  assert.equal(g.confident, false, 'confidence lapsed');
+  g = stepGrid(g, 8000, 120, 8000);   // one onset is not enough to re-confirm
+  assert.equal(g.confident, false, 'needs 8 fresh onsets');
+  assert.equal(g.onsetCount, 1);
+});
+
+test('stepGrid: opts.latencyMs shifts onset timestamps back before phase math', () => {
+  const { stepGrid, latencyMs } = loadLogic(HTML);
+  const L = latencyMs(2048, 44100);
+  const raw = feedGrid(stepGrid, beatTrain(120, 8), 120);
+  const comp = feedGrid(stepGrid, beatTrain(120, 8), 120, { latencyMs: L });
+  assert.ok(Math.abs((raw.anchorMs - comp.anchorMs) - L) < 1e-9,
+    `anchor shifted back by exactly ${L} ms`);
+});
+
+test('stepGrid: returns new state without mutating the input', () => {
+  const { stepGrid } = loadLogic(HTML);
+  const g = feedGrid(stepGrid, beatTrain(120, 8), 120);
+  const snapshot = JSON.parse(JSON.stringify(g));
+  stepGrid(g, 4040, 120, 4040);
+  stepGrid(g, null, 120, 9999);
+  assert.deepEqual(JSON.parse(JSON.stringify(g)), snapshot);
+});
+
 test('ringIndex: wraps backward through a 12-slot ring', () => {
   const { ringIndex } = loadLogic(HTML);
   assert.equal(ringIndex(5, 0, 12), 5);
