@@ -60,7 +60,17 @@ function step(grid, w, h, rule) {
   return next;
 }
 
-globalThis.__logic = { parseRule, countNeighbors, step, PRESETS };
+// Pure age update across one generation: born -> 1, surviving -> +1,
+// dead (or still empty) -> 0. Returns a fresh array of the same type.
+function ageTick(ages, before, after) {
+  const next = new ages.constructor(ages.length);
+  for (let i = 0; i < ages.length; i++) {
+    next[i] = after[i] ? (before[i] ? ages[i] + 1 : 1) : 0;
+  }
+  return next;
+}
+
+globalThis.__logic = { parseRule, countNeighbors, step, ageTick, PRESETS };
 })();
 </script>
 </body>
