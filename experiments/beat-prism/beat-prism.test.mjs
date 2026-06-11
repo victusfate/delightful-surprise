@@ -459,6 +459,71 @@ test('gridEvents: degenerate or reversed windows yield nothing', () => {
   assert.deepEqual(gridEvents(g, 5100, 3600), []);
 });
 
+// ---------- fx slice 4 — shuffle conductor ----------
+
+test('dealHand: deterministic per seed', () => {
+  const { dealHand, FX_REGISTRY } = loadLogic(HTML);
+  const all = FX_REGISTRY.map(e => e.id);
+  assert.deepEqual(dealHand(FX_REGISTRY, 5, all), dealHand(FX_REGISTRY, 5, all));
+});
+
+test('dealHand: deals 4–6 effects from a full pool', () => {
+  const { dealHand, FX_REGISTRY } = loadLogic(HTML);
+  const all = FX_REGISTRY.map(e => e.id);
+  for (let seed = 0; seed < 12; seed++) {
+    const hand = dealHand(FX_REGISTRY, seed, all);
+    assert.ok(hand.length >= 4 && hand.length <= 6, `seed ${seed}: ${hand.length}`);
+    assert.equal(new Set(hand).size, hand.length, 'no duplicates');
+  }
+});
+
+test('dealHand: at most 2 per category and at most 2 heavy', () => {
+  const { dealHand, FX_REGISTRY } = loadLogic(HTML);
+  const all = FX_REGISTRY.map(e => e.id);
+  const byId = new Map(FX_REGISTRY.map(e => [e.id, e]));
+  for (let seed = 0; seed < 40; seed++) {
+    const hand = dealHand(FX_REGISTRY, seed, all).map(id => byId.get(id));
+    const perCat = {};
+    let heavies = 0;
+    for (const e of hand) {
+      perCat[e.cat] = (perCat[e.cat] ?? 0) + 1;
+      if (e.heavy) heavies++;
+    }
+    for (const [cat, n] of Object.entries(perCat)) {
+      assert.ok(n <= 2, `seed ${seed}: ${n} from ${cat}`);
+    }
+    assert.ok(heavies <= 2, `seed ${seed}: ${heavies} heavy`);
+  }
+});
+
+test('dealHand: draws only from the enabled pool', () => {
+  const { dealHand, FX_REGISTRY } = loadLogic(HTML);
+  const enabled = ['hue-spin', 'kaleidoscope', 'echo-trails', 'scanlines',
+                   'lightning', 'zoom', 'posterize', 'shockwave'];
+  for (let seed = 0; seed < 12; seed++) {
+    for (const id of dealHand(FX_REGISTRY, seed, enabled)) {
+      assert.ok(enabled.includes(id), `seed ${seed} dealt disabled ${id}`);
+    }
+  }
+});
+
+test('dealHand: different seeds eventually deal different hands', () => {
+  const { dealHand, FX_REGISTRY } = loadLogic(HTML);
+  const all = FX_REGISTRY.map(e => e.id);
+  const first = JSON.stringify(dealHand(FX_REGISTRY, 0, all));
+  assert.ok(
+    Array.from({ length: 20 }, (_, s) => s + 1)
+      .some(s => JSON.stringify(dealHand(FX_REGISTRY, s, all)) !== first),
+    'twenty consecutive seeds never changed the hand');
+});
+
+test('dealHand: a pool smaller than 4 deals the whole pool', () => {
+  const { dealHand, FX_REGISTRY } = loadLogic(HTML);
+  const enabled = ['hue-spin', 'shockwave'];
+  const hand = dealHand(FX_REGISTRY, 3, enabled);
+  assert.deepEqual([...hand].sort(), [...enabled].sort());
+});
+
 test('ringIndex: wraps backward through a 12-slot ring', () => {
   const { ringIndex } = loadLogic(HTML);
   assert.equal(ringIndex(5, 0, 12), 5);
