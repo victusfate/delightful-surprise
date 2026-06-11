@@ -4,8 +4,122 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>l-system atelier — grammar in, garden out</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #020111; }
+  canvas { display: block; }
+  body, input, button { font-family: Georgia, 'Times New Roman', serif; }
+
+  #title {
+    position: fixed; top: 18px; left: 22px; pointer-events: none;
+    color: #cfd8ff; text-shadow: 0 0 18px rgba(120,160,255,.5);
+  }
+  #title h1 { font-size: 1.25rem; font-weight: normal; letter-spacing: .35em; margin: 0; opacity: .9; }
+  #title p { font-size: .78rem; letter-spacing: .14em; opacity: .55; margin: .3rem 0 0; }
+
+  #hint {
+    position: fixed; bottom: 14px; right: 18px; pointer-events: none;
+    font-size: .78rem; letter-spacing: .1em; color: rgba(180,195,255,.45);
+  }
+
+  #toast {
+    position: fixed; top: 22px; left: 50%; transform: translateX(-50%);
+    pointer-events: none; font-size: .9rem; letter-spacing: .15em;
+    color: rgba(200,215,255,.85); text-shadow: 0 0 14px rgba(120,160,255,.6);
+    opacity: 0; transition: opacity .6s ease;
+  }
+
+  /* ---------- rule panel: dark glass, bottom-left ---------- */
+  #panel {
+    position: fixed; left: 18px; bottom: 18px; width: 296px;
+    padding: 14px 16px 12px; border-radius: 14px;
+    background: rgba(8, 13, 30, .72);
+    border: 1px solid rgba(140, 170, 255, .16);
+    box-shadow: 0 8px 40px rgba(0,0,0,.55), inset 0 1px 0 rgba(190,210,255,.07);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    color: #c8d4f5;
+  }
+  #chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 11px; }
+  .chip {
+    cursor: pointer; padding: 3px 10px 4px; border-radius: 999px;
+    font-size: .72rem; letter-spacing: .12em;
+    color: rgba(190,210,255,.75); background: rgba(120,160,255,.07);
+    border: 1px solid rgba(140,170,255,.18);
+    transition: all .25s ease;
+  }
+  .chip:hover { background: rgba(120,160,255,.16); color: #e6eeff; }
+  .chip.active {
+    color: #04241f; background: #56e6c4; border-color: #56e6c4;
+    box-shadow: 0 0 14px rgba(86,230,196,.5);
+  }
+  .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .row label { font-size: .72rem; letter-spacing: .14em; color: rgba(170,190,240,.6); width: 52px; flex: none; }
+  .arrow { color: rgba(255,193,94,.65); font-size: .8rem; flex: none; }
+  input[type="text"] {
+    flex: 1; min-width: 0; padding: 4px 8px; border-radius: 7px;
+    background: rgba(4,8,20,.7); color: #d9e4ff;
+    border: 1px solid rgba(140,170,255,.16); outline: none;
+    font-size: .86rem; letter-spacing: .06em;
+    transition: border-color .25s ease, box-shadow .25s ease;
+  }
+  input[type="text"]:focus { border-color: rgba(86,230,196,.55); box-shadow: 0 0 10px rgba(86,230,196,.22); }
+  input.sym { flex: none; width: 1.5em; text-align: center; }
+  input[type="range"] { flex: 1; accent-color: #56e6c4; height: 14px; }
+  .val { font-size: .76rem; color: #ffd27a; width: 46px; flex: none; text-align: right; }
+  .stepper { display: flex; align-items: center; gap: 6px; }
+  .stepper button {
+    cursor: pointer; width: 22px; height: 22px; border-radius: 6px; padding: 0;
+    color: #cfe0ff; background: rgba(120,160,255,.1);
+    border: 1px solid rgba(140,170,255,.2); font-size: .85rem; line-height: 1;
+  }
+  .stepper button:hover { background: rgba(120,160,255,.22); }
+  #iterVal { font-size: .85rem; color: #ffd27a; min-width: 1.4em; text-align: center; }
+
+  #actions { display: flex; gap: 8px; margin-top: 10px; }
+  #actions button {
+    cursor: pointer; flex: 1; padding: 6px 0 7px; border-radius: 9px;
+    font-size: .8rem; letter-spacing: .18em;
+    color: #ffe2ae; background: rgba(255,180,70,.08);
+    border: 1px solid rgba(255,190,100,.3);
+    transition: all .25s ease;
+  }
+  #actions button:hover:not(:disabled) { background: rgba(255,180,70,.2); box-shadow: 0 0 14px rgba(255,180,70,.3); }
+  #actions button:disabled { opacity: .3; cursor: default; }
+
+  #diff {
+    margin-top: 9px; font-size: .72rem; line-height: 1.5; letter-spacing: .04em;
+    color: rgba(170,190,240,.55); word-break: break-all; display: none;
+  }
+  #diff .old { color: rgba(255,130,150,.75); text-decoration: line-through; }
+  #diff .new { color: #ffd27a; text-shadow: 0 0 8px rgba(255,200,110,.6); }
+
+  #error {
+    margin-top: 8px; font-size: .74rem; letter-spacing: .06em; line-height: 1.4;
+    color: #ff9eae; text-shadow: 0 0 10px rgba(255,120,150,.35); display: none;
+  }
+  #status { margin-top: 9px; font-size: .68rem; letter-spacing: .14em; color: rgba(150,175,230,.42); }
+</style>
 </head>
 <body>
+<canvas id="c"></canvas>
+<div id="title"><h1>l-system atelier</h1><p>grammar in, garden out</p></div>
+<div id="hint">[s]ave image</div>
+<div id="toast"></div>
+
+<div id="panel">
+  <div id="chips"></div>
+  <div class="row"><label for="axiom">axiom</label><input type="text" id="axiom" spellcheck="false"></div>
+  <div class="row rule"><input type="text" class="sym" maxlength="1" spellcheck="false"><span class="arrow">&rarr;</span><input type="text" class="rep" spellcheck="false"></div>
+  <div class="row rule"><input type="text" class="sym" maxlength="1" spellcheck="false"><span class="arrow">&rarr;</span><input type="text" class="rep" spellcheck="false"></div>
+  <div class="row rule"><input type="text" class="sym" maxlength="1" spellcheck="false"><span class="arrow">&rarr;</span><input type="text" class="rep" spellcheck="false"></div>
+  <div class="row"><label for="angle">angle</label><input type="range" id="angle" min="1" max="179" step="0.5"><span class="val" id="angleVal"></span></div>
+  <div class="row"><label>iterate</label>
+    <span class="stepper"><button id="iterDown" aria-label="fewer iterations">&minus;</button><span id="iterVal"></span><button id="iterUp" aria-label="more iterations">+</button></span>
+  </div>
+  <div id="actions"><button id="mutate">mutate</button><button id="back" disabled>back</button></div>
+  <div id="diff"></div>
+  <div id="error"></div>
+  <div id="status"></div>
+</div>
 
 <script id="logic">
 'use strict';
@@ -154,6 +268,394 @@ const PRESETS = {
 
 globalThis.__logic = { expand, interpret, validate, mutate, PRESETS };
 })();
+</script>
+<script>
+'use strict';
+const { expand, interpret, validate, mutate, PRESETS } = globalThis.__logic;
+
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const easeInOut = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+// ---------- canvas layers ----------
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const plantCanvas = document.createElement('canvas');   // persistent strokes
+const pctx = plantCanvas.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+
+// ---------- starfield ----------
+let stars = [];
+function makeStars() {
+  stars = [];
+  const n = Math.floor(W * H / 9000);
+  for (let i = 0; i < n; i++) {
+    stars.push({
+      x: Math.random() * W, y: Math.random() * H,
+      r: 0.3 + Math.random() * 1.1,
+      tw: 0.5 + Math.random() * 2, ph: Math.random() * TAU,
+    });
+  }
+}
+
+// ---------- plant state ----------
+// anim: the current derivation laid out for the screen, mid-replay.
+let anim = null;            // { segs, total, drawn, t0, dur, maxDepth, layout }
+let lastGood = null;        // last system that derived cleanly (panel state)
+let prevSystem = null;      // one-level undo for mutate
+
+function layoutFor(bounds) {
+  const bw = Math.max(bounds.maxX - bounds.minX, 1e-6);
+  const bh = Math.max(bounds.maxY - bounds.minY, 1e-6);
+  // stage sits a touch right of center so the rule panel never crowds the plant
+  const scale = Math.min((W * 0.72) / bw, (H * 0.82) / bh, 60);
+  return {
+    scale,
+    ox: W * 0.56 - (bounds.minX + bounds.maxX) / 2 * scale,
+    oy: H * 0.5 - (bounds.minY + bounds.maxY) / 2 * scale,
+  };
+}
+
+// depth ramp: dim deep teal at the root → luminous teal mid-canopy →
+// bright amber at the deepest tips. RGB stops keep the midtones soft.
+// Bracketless systems (Dragon, Snowflake) ramp along the path instead.
+const RAMP = [
+  [26, 102, 96],    // root: deep sea teal, dim
+  [70, 226, 199],   // mid: luminous teal
+  [255, 196, 110],  // tips: warm amber
+];
+function segStyle(seg, i, anim) {
+  // rampMax is a high percentile of depth, not the absolute max, so the
+  // outer canopy actually reaches amber instead of hoarding it in a few tips
+  const t = anim.rampMax > 0
+    ? clamp(seg.depth / anim.rampMax, 0, 1)
+    : i / Math.max(anim.total - 1, 1);
+  const u = t < 0.5 ? t * 2 : t * 2 - 1;
+  const [a, b] = t < 0.5 ? [RAMP[0], RAMP[1]] : [RAMP[1], RAMP[2]];
+  const r = lerp(a[0], b[0], u) | 0, g = lerp(a[1], b[1], u) | 0, bl = lerp(a[2], b[2], u) | 0;
+  const alpha = lerp(0.55, 0.95, t);
+  return {
+    color: `rgba(${r},${g},${bl},${alpha.toFixed(2)})`,
+    width: lerp(2.6, 0.7, t),
+  };
+}
+
+// stroke segments [a, b) onto the persistent plant layer
+function drawSegRange(a, b) {
+  const { scale, ox, oy } = anim.layout;
+  pctx.lineCap = 'round';
+  let prevColor = null, prevWidth = -1;
+  for (let i = a; i < b; i++) {
+    const s = anim.segs[i];
+    const st = segStyle(s, i, anim);
+    if (st.color !== prevColor || st.width !== prevWidth) {
+      pctx.strokeStyle = st.color;
+      pctx.lineWidth = st.width;
+      pctx.shadowColor = st.color;
+      pctx.shadowBlur = 6;
+      prevColor = st.color; prevWidth = st.width;
+    }
+    pctx.beginPath();
+    pctx.moveTo(s.x1 * scale + ox, s.y1 * scale + oy);
+    pctx.lineTo(s.x2 * scale + ox, s.y2 * scale + oy);
+    pctx.stroke();
+  }
+  pctx.shadowBlur = 0;
+}
+
+function clearPlantLayer() {
+  pctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  pctx.clearRect(0, 0, W, H);
+}
+
+// growth duration scales gently with complexity: small systems snap,
+// the fern unfurls over ~4.5 s
+function growDuration(n) { return clamp(1.4 + n / 7000, 1.8, 4.6); }
+
+function startReplay(segs, bounds, rampMax) {
+  anim = {
+    segs, total: segs.length, drawn: 0,
+    t0: performance.now() / 1000,
+    dur: growDuration(segs.length),
+    rampMax,
+    layout: layoutFor(bounds),
+    bounds,
+  };
+  clearPlantLayer();
+}
+
+// ---------- panel ----------
+const $ = id => document.getElementById(id);
+const axiomEl = $('axiom');
+const ruleRows = [...document.querySelectorAll('.rule')].map(r => ({
+  sym: r.querySelector('.sym'), rep: r.querySelector('.rep'),
+}));
+const angleEl = $('angle'), angleValEl = $('angleVal');
+const iterValEl = $('iterVal');
+const errorEl = $('error'), diffEl = $('diff'), statusEl = $('status');
+const mutateBtn = $('mutate'), backBtn = $('back');
+const chipsEl = $('chips');
+
+let iterations = 1;
+let activeChip = null;
+
+for (const name of Object.keys(PRESETS)) {
+  const b = document.createElement('button');
+  b.className = 'chip';
+  b.textContent = name.toLowerCase();
+  b.dataset.name = name;
+  b.addEventListener('click', () => loadPreset(name));
+  chipsEl.appendChild(b);
+}
+
+function setActiveChip(name) {
+  activeChip = name;
+  for (const b of chipsEl.children) b.classList.toggle('active', b.dataset.name === name);
+}
+
+function readPanel() {
+  const rules = {};
+  for (const r of ruleRows) {
+    const k = r.sym.value.trim();
+    if (k) rules[k] = r.rep.value.trim();
+  }
+  return {
+    axiom: axiomEl.value.trim(),
+    rules,
+    angle: parseFloat(angleEl.value),
+    iterations,
+  };
+}
+
+function writePanel(sys) {
+  axiomEl.value = sys.axiom;
+  const entries = Object.entries(sys.rules);
+  ruleRows.forEach((r, i) => {
+    r.sym.value = entries[i] ? entries[i][0] : '';
+    r.rep.value = entries[i] ? entries[i][1] : '';
+  });
+  angleEl.value = sys.angle;
+  angleValEl.textContent = `${sys.angle}°`;
+  iterations = sys.iterations;
+  iterValEl.textContent = iterations;
+}
+
+function showError(msg) {
+  errorEl.textContent = msg;
+  errorEl.style.display = msg ? 'block' : 'none';
+}
+
+const escHtml = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// minimal prefix/suffix diff of the one mutated rule, highlighted
+function showDiff(oldRules, newRules) {
+  let html = '';
+  for (const k of Object.keys(newRules)) {
+    const a = oldRules[k] ?? '', b = newRules[k];
+    if (a === b) continue;
+    let p = 0;
+    while (p < a.length && p < b.length && a[p] === b[p]) p++;
+    let q = 0;
+    while (q < a.length - p && q < b.length - p && a[a.length - 1 - q] === b[b.length - 1 - q]) q++;
+    const mid = s => `${escHtml(s.slice(0, p))}<span class="MARK">${escHtml(s.slice(p, s.length - q))}</span>${escHtml(s.slice(s.length - q))}`;
+    html += `${escHtml(k)}: ${mid(a).replace('MARK', 'old')} &rarr; ${mid(b).replace('MARK', 'new')}<br>`;
+  }
+  diffEl.innerHTML = html;
+  diffEl.style.display = html ? 'block' : 'none';
+}
+
+// ---------- derive ----------
+function derive() {
+  const sys = readPanel();
+  const err = validate(sys.axiom, sys.rules, sys.iterations);
+  if (err) { showError(err); return; }       // canvas keeps the last good plant
+  let segs, bounds;
+  try {
+    const s = expand(sys.axiom, sys.rules, sys.iterations);
+    ({ segments: segs, bounds } = interpret(s, { angle: sys.angle, step: 5 }));
+  } catch (e) {
+    showError('that grammar would not grow');
+    return;
+  }
+  if (!segs.length) { showError('nothing to draw — no F in the derivation'); return; }
+  showError(null);
+  lastGood = sys;
+  // rampMax = 85th-percentile depth (0 means: ramp along the path instead)
+  const depths = segs.map(g => g.depth).sort((a, b) => a - b);
+  const rampMax = depths[depths.length - 1] > 0
+    ? Math.max(1, depths[Math.floor(depths.length * 0.85)])
+    : 0;
+  startReplay(segs, bounds, rampMax);
+  statusEl.textContent = `${segs.length.toLocaleString()} segments · ${anim.dur.toFixed(1)}s grow`;
+}
+
+let deriveTimer = null;
+const scheduleDerive = (ms = 280) => { clearTimeout(deriveTimer); deriveTimer = setTimeout(derive, ms); };
+
+function loadPreset(name) {
+  writePanel(PRESETS[name]);
+  setActiveChip(name);
+  diffEl.style.display = 'none';
+  derive();
+}
+
+// typed edits: debounce, drop the chip highlight, clear stale diff
+for (const el of [axiomEl, ...ruleRows.flatMap(r => [r.sym, r.rep])]) {
+  el.addEventListener('input', () => { setActiveChip(null); diffEl.style.display = 'none'; scheduleDerive(); });
+}
+angleEl.addEventListener('input', () => {
+  angleValEl.textContent = `${parseFloat(angleEl.value)}°`;
+  setActiveChip(null);
+  scheduleDerive(60);          // near-instant crystalline rederive
+});
+$('iterUp').addEventListener('click', () => {
+  iterations = Math.min(iterations + 1, 16);
+  iterValEl.textContent = iterations;
+  setActiveChip(null); derive();
+});
+$('iterDown').addEventListener('click', () => {
+  iterations = Math.max(iterations - 1, 0);
+  iterValEl.textContent = iterations;
+  setActiveChip(null); derive();
+});
+
+mutateBtn.addEventListener('click', () => {
+  const base = lastGood ?? readPanel();
+  prevSystem = { ...base, rules: { ...base.rules } };
+  backBtn.disabled = false;
+  // try a few times in case a mutation explodes past the budget
+  for (let tries = 0; tries < 8; tries++) {
+    const newRules = mutate(base.rules, Math.random);
+    if (validate(base.axiom, newRules, base.iterations) === null) {
+      writePanel({ ...base, rules: newRules });
+      setActiveChip(null);
+      showDiff(base.rules, newRules);
+      derive();
+      return;
+    }
+  }
+  showError('every mutation exploded — try fewer iterations');
+});
+
+backBtn.addEventListener('click', () => {
+  if (!prevSystem) return;
+  writePanel(prevSystem);
+  prevSystem = null;
+  backBtn.disabled = true;
+  setActiveChip(null);
+  diffEl.style.display = 'none';
+  derive();
+});
+
+// ---------- toast & keys ----------
+const toastEl = $('toast');
+let toastTimer = null;
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.style.opacity = 1;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.style.opacity = 0, 1800);
+}
+
+window.addEventListener('keydown', e => {
+  if (e.target.closest('input')) return;      // typing in the panel
+  if (e.key === 's') {
+    const a = document.createElement('a');
+    a.download = 'l-system-atelier.png';
+    a.href = canvas.toDataURL('image/png');
+    a.click();
+    toast('image saved');
+  }
+});
+
+// ---------- resize ----------
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  for (const [cv, cx] of [[canvas, ctx], [plantCanvas, pctx]]) {
+    cv.width = W * DPR; cv.height = H * DPR;
+    cx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  makeStars();
+  if (anim) {                       // re-fit and redraw what has grown so far
+    anim.layout = layoutFor(anim.bounds);
+    clearPlantLayer();
+    drawSegRange(0, anim.drawn);
+  }
+}
+window.addEventListener('resize', resize);
+
+// ---------- main loop ----------
+function frame(ms) {
+  const now = ms / 1000;
+
+  // night sky
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#020108');
+  sky.addColorStop(0.55, '#0a0f2c');
+  sky.addColorStop(1, '#04060f');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+
+  for (const s of stars) {
+    const tw = 0.3 + 0.7 * ((Math.sin(now * s.tw + s.ph) + 1) / 2);
+    ctx.globalAlpha = tw * 0.8;
+    ctx.fillStyle = '#dfe6ff';
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, TAU); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  if (anim) {
+    const f = clamp((now - anim.t0) / anim.dur, 0, 1);
+    const target = Math.floor(easeInOut(f) * anim.total);
+    if (target > anim.drawn) {
+      drawSegRange(anim.drawn, target);
+      anim.drawn = target;
+    }
+    ctx.drawImage(plantCanvas, 0, 0, W, H);
+
+    if (anim.drawn >= anim.total) {
+      // finished: the whole plant breathes light
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.07 + 0.05 * Math.sin(now * 1.4);
+      ctx.drawImage(plantCanvas, 0, 0, W, H);
+      ctx.restore();
+    } else {
+      // growth fire: bright embers riding the newest tips
+      const { scale, ox, oy } = anim.layout;
+      const from = Math.max(0, anim.drawn - 26);
+      for (let i = from; i < anim.drawn; i++) {
+        const s = anim.segs[i];
+        const a = (i - from + 1) / (anim.drawn - from + 1);
+        ctx.globalAlpha = a * 0.9;
+        ctx.fillStyle = '#eafff7';
+        ctx.shadowColor = '#7dffd9';
+        ctx.shadowBlur = 9;
+        ctx.beginPath();
+        ctx.arc(s.x2 * scale + ox, s.y2 * scale + oy, 1.3, 0, TAU);
+        ctx.fill();
+      }
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // soft vignette to pool the light center-stage
+  const vig = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.42, W / 2, H / 2, Math.max(W, H) * 0.75);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(1,1,8,0.5)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, W, H);
+
+  requestAnimationFrame(frame);
+}
+
+resize();
+loadPreset('Fern');
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>
