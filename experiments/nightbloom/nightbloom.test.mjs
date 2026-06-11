@@ -67,3 +67,34 @@ test('pop ends at 1 and overshoots above 1 on the way (easeOutBack)', () => {
   for (let t = 0; t <= 1; t += 0.02) if (pop(t) > 1.0001) overshoot = true;
   assert.ok(overshoot, 'expected overshoot above 1 somewhere in (0,1)');
 });
+
+test('freq maps semitone offsets to equal-temperament Hz from A3', () => {
+  const { freq } = loadLogic(HTML);
+  assert.equal(freq(0), 220);
+  assert.ok(Math.abs(freq(12) - 440) < 1e-9);
+  assert.ok(Math.abs(freq(24) - 880) < 1e-9);
+});
+
+test('SCALE is a strictly ascending A-minor pentatonic', () => {
+  const { SCALE } = loadLogic(HTML);
+  const PENTATONIC = new Set([0, 3, 5, 7, 10]);
+  assert.ok(SCALE.length >= 5);
+  for (let i = 0; i < SCALE.length; i++) {
+    if (i > 0) assert.ok(SCALE[i] > SCALE[i - 1], 'must ascend');
+    assert.ok(PENTATONIC.has(SCALE[i] % 12), `degree ${SCALE[i]} not in A minor pentatonic`);
+  }
+});
+
+test('PALETTES: six named palettes, each with valid petal and heart colors', () => {
+  const { PALETTES } = loadLogic(HTML);
+  assert.equal(PALETTES.length, 6);
+  const hex = /^#[0-9a-f]{6}$/i;
+  const names = new Set();
+  for (const p of PALETTES) {
+    names.add(p.name);
+    assert.ok(p.petals.length >= 3, `${p.name} needs >=3 petal colors`);
+    for (const c of p.petals) assert.match(c, hex);
+    assert.match(p.heart, hex);
+  }
+  assert.equal(names.size, 6, 'palette names must be unique');
+});
