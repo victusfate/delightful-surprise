@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>lichen lab — a petri dish for the rules of life</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #020111; }
+  body {
+    font-family: Georgia, 'Times New Roman', serif; color: #cfd8ff;
+    background: radial-gradient(120% 90% at 50% 38%, #0a0f2b 0%, #04061a 55%, #020111 100%);
+  }
+  canvas { display: block; cursor: crosshair; }
+
+  #ui {
+    position: fixed; inset: 0; pointer-events: none;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; transition: opacity 2.2s ease;
+    text-shadow: 0 0 18px rgba(120,160,255,.5);
+  }
+  #ui h1 { font-size: 2.6rem; font-weight: normal; letter-spacing: .35em; margin: 0 0 .6rem; opacity: .92; }
+  #ui p { font-size: 1rem; letter-spacing: .12em; opacity: .65; margin: .25rem 0; }
+  #ui.hidden { opacity: 0; }
+
+  #pausedHint {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    pointer-events: none; font-size: .85rem; letter-spacing: .22em;
+    color: rgba(170,190,255,.65); text-shadow: 0 0 12px rgba(120,160,255,.45);
+    animation: breathe 2.6s ease-in-out infinite; transition: opacity .5s ease;
+  }
+  #pausedHint.hidden {
+    opacity: 0; animation: none; visibility: hidden;
+    transition: opacity .5s ease, visibility 0s .5s;
+  }
+  @keyframes breathe { 0%,100% { opacity: .35; } 50% { opacity: .85; } }
+
+  #hint {
+    position: fixed; bottom: 14px; right: 18px; pointer-events: none;
+    font-size: .76rem; letter-spacing: .1em; color: rgba(180,195,255,.45);
+  }
+  #toast {
+    position: fixed; top: 22px; left: 50%; transform: translateX(-50%);
+    pointer-events: none; font-size: .9rem; letter-spacing: .15em;
+    color: rgba(200,215,255,.9); text-shadow: 0 0 14px rgba(120,160,255,.6);
+    opacity: 0; transition: opacity .6s ease;
+  }
+
+  #panel {
+    position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 14px; flex-wrap: nowrap;
+    padding: 10px 18px; border-radius: 14px;
+    background: rgba(9,13,32,.62); border: 1px solid rgba(150,180,255,.16);
+    box-shadow: 0 6px 30px rgba(0,0,0,.5), inset 0 1px 0 rgba(180,200,255,.08);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  }
+  #chips { display: flex; gap: 7px; }
+  .chip {
+    font-family: Georgia, serif; cursor: pointer;
+    background: rgba(20,28,58,.6); color: #aebcf0;
+    border: 1px solid rgba(150,180,255,.18); border-radius: 10px;
+    padding: 5px 11px 4px; text-align: center; line-height: 1.15;
+    transition: all .25s ease;
+  }
+  .chip b { display: block; font-weight: normal; font-size: .82rem; letter-spacing: .08em; }
+  .chip i { display: block; font-style: normal; font-size: .58rem; letter-spacing: .14em;
+            text-transform: uppercase; opacity: .5; }
+  .chip:hover { border-color: rgba(170,200,255,.5); color: #e6ecff; }
+  .chip.active {
+    background: rgba(60,90,170,.35); color: #eef2ff;
+    border-color: rgba(170,200,255,.65); box-shadow: 0 0 14px rgba(110,150,255,.35);
+  }
+
+  #rule {
+    font-family: Georgia, serif; font-size: .95rem; letter-spacing: .1em;
+    width: 118px; text-align: center;
+    background: rgba(5,8,22,.8); color: #d8e2ff;
+    border: 1px solid rgba(150,180,255,.3); border-radius: 9px;
+    padding: 6px 8px; outline: none; transition: border-color .3s, box-shadow .3s;
+  }
+  #rule:focus { border-color: rgba(170,200,255,.7); box-shadow: 0 0 12px rgba(110,150,255,.3); }
+  #rule.bad { border-color: rgba(255,110,110,.8); box-shadow: 0 0 12px rgba(255,80,80,.35); }
+
+  #speedwrap { display: flex; align-items: center; gap: 8px; }
+  #speed { width: 110px; accent-color: #7e9bff; cursor: pointer; }
+  #speedLabel { font-size: .72rem; letter-spacing: .1em; color: rgba(180,195,255,.6);
+                width: 62px; text-align: left; }
+
+  #status {
+    position: fixed; bottom: 14px; left: 18px; pointer-events: none;
+    font-size: .76rem; letter-spacing: .12em; color: rgba(180,195,255,.5);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <h1>lichen lab</h1>
+  <p>paint the dish &middot; press space to let it live</p>
+  <p>then bend the rules while it runs</p>
+</div>
+<div id="pausedHint">paused &mdash; space to run</div>
+<div id="hint">drag&nbsp;paint &nbsp; right-drag/[e]&nbsp;erase &nbsp; [space]&nbsp;run &nbsp; [n]&nbsp;step &nbsp; [c]&nbsp;clear</div>
+<div id="toast"></div>
+<div id="status"></div>
+
+<div id="panel">
+  <div id="chips"></div>
+  <input id="rule" value="B3/S23" spellcheck="false" autocomplete="off" aria-label="rule">
+  <div id="speedwrap">
+    <input id="speed" type="range" min="1" max="60" value="24" aria-label="speed">
+    <span id="speedLabel"></span>
+  </div>
+</div>
+
+<script id="logic">
+'use strict';
+// Pure, DOM-free simulation logic — unit-tested in Node via
+// experiments/_harness/logic.mjs. IIFE so only __logic reaches the
+// shared global scope.
+(() => {
+
+// 'B3/S23' -> { birth: Set, survive: Set }. Case-insensitive; S may be
+// empty (Seeds). Throws a clear Error on anything else.
+function parseRule(str) {
+  const m = /^B([0-8]*)\/S([0-8]*)$/i.exec(String(str).trim());
+  if (!m) throw new Error(`malformed rule "${str}" — expected B<digits>/S<digits>, e.g. B3/S23`);
+  return { birth: new Set([...m[1]].map(Number)), survive: new Set([...m[2]].map(Number)) };
+}
+
+const PRESETS = [
+  { name: 'Life',        rule: 'B3/S23',       temperament: 'orderly' },
+  { name: 'HighLife',    rule: 'B36/S23',      temperament: 'mutinous' },
+  { name: 'Seeds',       rule: 'B2/S',         temperament: 'explosive' },
+  { name: 'Day & Night', rule: 'B3678/S34678', temperament: 'tidal' },
+  { name: 'Maze',        rule: 'B3/S12345',    temperament: 'crystalline' },
+  { name: 'Coral',       rule: 'B3/S45678',    temperament: 'accretive' },
+];
+
+// Toroidal Moore-neighborhood count for one cell.
+function countNeighbors(grid, w, h, x, y) {
+  const xl = (x + w - 1) % w, xr = (x + 1) % w;
+  const yu = (y + h - 1) % h, yd = (y + 1) % h;
+  const ru = yu * w, rm = y * w, rd = yd * w;
+  return grid[ru + xl] + grid[ru + x] + grid[ru + xr]
+       + grid[rm + xl] +                grid[rm + xr]
+       + grid[rd + xl] + grid[rd + x] + grid[rd + xr];
+}
+
+// One generation on a toroidal grid of 0/1 cells. Returns a fresh
+// Uint8Array; never mutates the input. Kept allocation-free per cell so
+// 160x100 at 60 gen/s stays cheap.
+function step(grid, w, h, rule) {
+  const next = new Uint8Array(w * h);
+  const { birth, survive } = rule;
+  for (let y = 0; y < h; y++) {
+    const yu = ((y + h - 1) % h) * w;
+    const ym = y * w;
+    const yd = ((y + 1) % h) * w;
+    for (let x = 0; x < w; x++) {
+      const xl = (x + w - 1) % w, xr = (x + 1) % w;
+      const n = grid[yu + xl] + grid[yu + x] + grid[yu + xr]
+              + grid[ym + xl] +               grid[ym + xr]
+              + grid[yd + xl] + grid[yd + x] + grid[yd + xr];
+      next[ym + x] = grid[ym + x] ? (survive.has(n) ? 1 : 0) : (birth.has(n) ? 1 : 0);
+    }
+  }
+  return next;
+}
+
+// Pure age update across one generation: born -> 1, surviving -> +1,
+// dead (or still empty) -> 0. Returns a fresh array of the same type.
+function ageTick(ages, before, after) {
+  const next = new ages.constructor(ages.length);
+  for (let i = 0; i < ages.length; i++) {
+    next[i] = after[i] ? (before[i] ? ages[i] + 1 : 1) : 0;
+  }
+  return next;
+}
+
+globalThis.__logic = { parseRule, countNeighbors, step, ageTick, PRESETS };
+})();
+</script>
+<script>
+'use strict';
+const { parseRule, step, ageTick, PRESETS } = globalThis.__logic;
+
+// ---------- dish state ----------
+const GW = 160, GH = 100, N = GW * GH;
+let grid = new Uint8Array(N);     // 0/1 — the only thing the logic layer sees
+let ages = new Uint16Array(N);    // generations continuously alive
+const ghosts = new Float32Array(N); // fading traces of the dead, 0..1
+let rule = parseRule('B3/S23');
+let ruleStr = 'B3/S23';
+let running = false;
+let generation = 0;
+let population = 0;
+let eraser = false;
+
+// faint random soup, simmering-in-waiting
+function seedSoup() {
+  for (let i = 0; i < N; i++) grid[i] = Math.random() < 0.10 ? 1 : 0;
+  ages.fill(0); ghosts.fill(0);
+  for (let i = 0; i < N; i++) if (grid[i]) ages[i] = 1;
+  generation = 0;
+}
+seedSoup();
+
+function doStep() {
+  const before = grid;
+  const after = step(before, GW, GH, rule);
+  ages = ageTick(ages, before, after);
+  for (let i = 0; i < N; i++) {
+    if (before[i] && !after[i]) ghosts[i] = 1;            // a fresh ghost
+    else if (ghosts[i] > 0) {
+      ghosts[i] *= 0.86;                                  // fade per generation
+      if (ghosts[i] < 0.02) ghosts[i] = 0;
+    }
+    if (after[i]) ghosts[i] = 0;                          // the living displace ghosts
+  }
+  grid = after;
+  generation++;
+}
+
+function clearDish() {
+  grid.fill(0); ages.fill(0); ghosts.fill(0);
+  generation = 0;
+}
+
+// ---------- age palette: teal -> violet -> ember ----------
+function hsl2rgb(hh, s, l) {
+  hh = ((hh % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs((hh / 60) % 2 - 1)), m = l - c / 2;
+  const [r, g, b] = hh < 60 ? [c, x, 0] : hh < 120 ? [x, c, 0] : hh < 180 ? [0, c, x]
+                  : hh < 240 ? [0, x, c] : hh < 300 ? [x, 0, c] : [c, 0, x];
+  return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
+}
+// 256-entry lookup: index = min(age, 255)
+const PALETTE = new Uint8Array(256 * 3);
+for (let i = 1; i < 256; i++) {
+  const t = i / 255;
+  // hue: teal 168 -> violet 285 -> ember 380 (=20)
+  const hue = t < 0.45 ? 168 + (t / 0.45) * (285 - 168)
+                       : 285 + ((t - 0.45) / 0.55) * (380 - 285);
+  const light = 0.80 - 0.26 * Math.min(1, t * 1.6);       // newborns bright
+  const sat = 0.92 - 0.1 * t;
+  const [r, g, b] = hsl2rgb(hue, sat, light);
+  PALETTE[i * 3] = r; PALETTE[i * 3 + 1] = g; PALETTE[i * 3 + 2] = b;
+}
+PALETTE[3] = 210; PALETTE[4] = 255; PALETTE[5] = 244;     // age-1 spark, near-white teal
+
+// ---------- canvas & layout ----------
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const cells = document.createElement('canvas');           // grid-resolution layer
+cells.width = GW; cells.height = GH;
+const cctx = cells.getContext('2d');
+const img = cctx.createImageData(GW, GH);
+
+let W = 0, H = 0, DPR = 1;
+let dish = { x: 0, y: 0, w: 0, h: 0, r: 18 };             // dish rect on screen
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const mTop = 26, mBottom = 96, mSide = 30;              // leave room for the panel
+  const availW = W - mSide * 2, availH = H - mTop - mBottom;
+  const scale = Math.min(availW / GW, availH / GH);
+  dish.w = GW * scale; dish.h = GH * scale;
+  dish.x = (W - dish.w) / 2;
+  dish.y = mTop + (availH - dish.h) / 2;
+  dish.r = Math.max(10, scale * 2.4);
+  document.getElementById('pausedHint').style.top = (dish.y + dish.h + 10) + 'px';
+}
+window.addEventListener('resize', resize);
+
+function roundRect(c2, x, y, w2, h2, r) {
+  c2.beginPath();
+  c2.moveTo(x + r, y);
+  c2.arcTo(x + w2, y, x + w2, y + h2, r);
+  c2.arcTo(x + w2, y + h2, x, y + h2, r);
+  c2.arcTo(x, y + h2, x, y, r);
+  c2.arcTo(x, y, x + w2, y, r);
+  c2.closePath();
+}
+
+// ---------- render ----------
+function paintCellsLayer() {
+  const d = img.data;
+  let pop = 0;
+  for (let i = 0; i < N; i++) {
+    const o = i * 4;
+    if (grid[i]) {
+      pop++;
+      const a = ages[i] > 255 ? 255 : ages[i];
+      d[o] = PALETTE[a * 3]; d[o + 1] = PALETTE[a * 3 + 1]; d[o + 2] = PALETTE[a * 3 + 2];
+      d[o + 3] = 255;
+    } else if (ghosts[i] > 0) {
+      d[o] = 56; d[o + 1] = 86; d[o + 2] = 200;           // deep blue ghost
+      d[o + 3] = (ghosts[i] * 135) | 0;
+    } else {
+      d[o + 3] = 0;
+    }
+  }
+  population = pop;
+  cctx.putImageData(img, 0, 0);
+}
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+
+  // dish shadow + glass body
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,.6)'; ctx.shadowBlur = 40; ctx.shadowOffsetY = 14;
+  roundRect(ctx, dish.x, dish.y, dish.w, dish.h, dish.r);
+  ctx.fillStyle = '#070b1d';
+  ctx.fill();
+  ctx.restore();
+
+  // clip everything inside the glass
+  ctx.save();
+  roundRect(ctx, dish.x, dish.y, dish.w, dish.h, dish.r);
+  ctx.clip();
+
+  // agar tint
+  const agar = ctx.createLinearGradient(0, dish.y, 0, dish.y + dish.h);
+  agar.addColorStop(0, 'rgba(14,20,46,.9)');
+  agar.addColorStop(1, 'rgba(6,9,24,.95)');
+  ctx.fillStyle = agar;
+  ctx.fillRect(dish.x, dish.y, dish.w, dish.h);
+
+  paintCellsLayer();
+
+  // glow pass: blurred, additive
+  ctx.imageSmoothingEnabled = true;
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.6;
+  ctx.filter = `blur(${Math.max(4, dish.w / GW * 1.1)}px)`;
+  ctx.drawImage(cells, dish.x, dish.y, dish.w, dish.h);
+  ctx.filter = 'none';
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+
+  // body pass: soft rounded pixels via bilinear upscale
+  ctx.drawImage(cells, dish.x, dish.y, dish.w, dish.h);
+
+  // vignette inside the dish
+  const vg = ctx.createRadialGradient(
+    dish.x + dish.w / 2, dish.y + dish.h / 2, Math.min(dish.w, dish.h) * 0.32,
+    dish.x + dish.w / 2, dish.y + dish.h / 2, Math.max(dish.w, dish.h) * 0.72);
+  vg.addColorStop(0, 'rgba(0,0,10,0)');
+  vg.addColorStop(1, 'rgba(0,0,10,.5)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(dish.x, dish.y, dish.w, dish.h);
+
+  // glass sheen along the top
+  const sheen = ctx.createLinearGradient(0, dish.y, 0, dish.y + dish.h * 0.35);
+  sheen.addColorStop(0, 'rgba(190,210,255,.07)');
+  sheen.addColorStop(1, 'rgba(190,210,255,0)');
+  ctx.fillStyle = sheen;
+  ctx.fillRect(dish.x, dish.y, dish.w, dish.h * 0.35);
+  ctx.restore();
+
+  // rim light
+  roundRect(ctx, dish.x + 0.5, dish.y + 0.5, dish.w - 1, dish.h - 1, dish.r);
+  ctx.strokeStyle = 'rgba(160,190,255,.22)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+// ---------- painting ----------
+let painting = false, erasing = false, lastCell = null;
+
+function cellAt(px, py) {
+  const x = Math.floor((px - dish.x) / dish.w * GW);
+  const y = Math.floor((py - dish.y) / dish.h * GH);
+  if (x < 0 || x >= GW || y < 0 || y >= GH) return null;
+  return { x, y };
+}
+
+function daub(cx2, cy2, value) {
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (Math.abs(dx) + Math.abs(dy) === 2) continue;    // plus-shaped brush
+      const x = (cx2 + dx + GW) % GW, y = (cy2 + dy + GH) % GH;
+      const i = y * GW + x;
+      grid[i] = value;
+      ages[i] = value ? Math.max(1, ages[i]) : 0;
+      if (value) ghosts[i] = 0;
+    }
+  }
+}
+
+function paintLine(from, to, value) {
+  const steps = Math.max(Math.abs(to.x - from.x), Math.abs(to.y - from.y), 1);
+  for (let s = 0; s <= steps; s++) {
+    const x = Math.round(from.x + (to.x - from.x) * s / steps);
+    const y = Math.round(from.y + (to.y - from.y) * s / steps);
+    daub(x, y, value);
+  }
+}
+
+canvas.addEventListener('pointerdown', e => {
+  const c = cellAt(e.clientX, e.clientY);
+  if (!c) return;
+  painting = true;
+  erasing = e.button === 2 || eraser;
+  canvas.setPointerCapture(e.pointerId);
+  daub(c.x, c.y, erasing ? 0 : 1);
+  lastCell = c;
+  dismissTitle();
+});
+canvas.addEventListener('pointermove', e => {
+  if (!painting) return;
+  const c = cellAt(e.clientX, e.clientY);
+  if (!c) { lastCell = null; return; }
+  paintLine(lastCell ?? c, c, erasing ? 0 : 1);
+  lastCell = c;
+});
+const stopPaint = () => { painting = false; lastCell = null; };
+canvas.addEventListener('pointerup', stopPaint);
+canvas.addEventListener('pointercancel', stopPaint);
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+// ---------- UI ----------
+const ruleInput = document.getElementById('rule');
+const chipsEl = document.getElementById('chips');
+const speedEl = document.getElementById('speed');
+const speedLabel = document.getElementById('speedLabel');
+const statusEl = document.getElementById('status');
+const toastEl = document.getElementById('toast');
+const pausedHint = document.getElementById('pausedHint');
+
+let toastTimer = null;
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.style.opacity = 1;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.style.opacity = 0, 1800);
+}
+
+let titleGone = false;
+function dismissTitle() {
+  if (titleGone) return;
+  titleGone = true;
+  document.getElementById('ui').classList.add('hidden');
+}
+
+function applyRule(str, announce) {
+  try {
+    rule = parseRule(str);
+    ruleStr = str.trim().toUpperCase();
+    ruleInput.value = ruleStr;
+    ruleInput.classList.remove('bad');
+    markActiveChip();
+    if (announce) toast(announce);
+    return true;
+  } catch (err) {
+    ruleInput.classList.add('bad');
+    toast('unrecognized rule — try B3/S23');
+    return false;
+  }
+}
+
+function markActiveChip() {
+  for (const el of chipsEl.children) {
+    el.classList.toggle('active', el.dataset.rule.toUpperCase() === ruleStr);
+  }
+}
+
+for (const p of PRESETS) {
+  const b = document.createElement('button');
+  b.className = 'chip';
+  b.dataset.rule = p.rule;
+  b.title = `${p.name} — ${p.rule}`;
+  b.innerHTML = `<b>${p.temperament}</b><i>${p.name}</i>`;
+  b.addEventListener('click', () => {
+    applyRule(p.rule, `${p.name} — the dish turns ${p.temperament}`);
+    b.blur();
+    dismissTitle();
+  });
+  chipsEl.appendChild(b);
+}
+markActiveChip();
+
+ruleInput.addEventListener('change', () => applyRule(ruleInput.value, 'rule bent'));
+ruleInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { applyRule(ruleInput.value, 'rule bent'); ruleInput.blur(); }
+  e.stopPropagation();
+});
+
+function speedVal() { return Number(speedEl.value); }
+function updateSpeedLabel() { speedLabel.textContent = `${speedVal()} gen/s`; }
+speedEl.addEventListener('input', updateSpeedLabel);
+updateSpeedLabel();
+
+function setRunning(v) {
+  running = v;
+  pausedHint.classList.toggle('hidden', running);
+  dismissTitle();
+}
+
+window.addEventListener('keydown', e => {
+  if (e.target instanceof HTMLInputElement) return;        // typing, not steering
+  if (e.code === 'Space') {
+    e.preventDefault();
+    setRunning(!running);
+    toast(running ? 'the dish lives' : 'paused');
+  } else if (e.key === 'n') {
+    if (!running) { doStep(); toast(`generation ${generation}`); }
+  } else if (e.key === 'c') {
+    clearDish();
+    toast('the dish is wiped clean');
+  } else if (e.key === 'e') {
+    eraser = !eraser;
+    toast(eraser ? 'eraser — drag removes life' : 'brush — drag paints life');
+  }
+});
+
+// ---------- main loop ----------
+let last = 0, acc = 0, statusTick = 0;
+function frame(ms) {
+  const now = ms / 1000;
+  const dt = Math.min(0.1, now - last || 0.016);
+  last = now;
+
+  if (running) {
+    acc += dt;
+    const interval = 1 / speedVal();
+    let steps = 0;
+    while (acc >= interval && steps < 4) { doStep(); acc -= interval; steps++; }
+    if (acc > interval) acc = 0;                           // don't spiral on slow frames
+  }
+
+  render();
+
+  if (++statusTick % 8 === 0) {
+    statusEl.textContent =
+      `${ruleStr} · gen ${generation} · ${population} alive · ${running ? 'running' : 'paused'}${eraser ? ' · eraser' : ''}`;
+  }
+  requestAnimationFrame(frame);
+}
+
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
