@@ -51,7 +51,40 @@ function nearestStar(stars, x, y, maxR) {
   return best;
 }
 
-globalThis.__logic = { mulberry, makeSky, nearestStar };
+// Order-sensitive FNV-1a-style hash of the star-index sequence.
+function figureHash(indices) {
+  let h = 0x811c9dc5;
+  for (const idx of indices) {
+    h ^= (idx + 1) & 0xffff;
+    h = Math.imul(h, 0x01000193);
+    h ^= h >>> 13;
+  }
+  // fold in the length so prefixes differ
+  h ^= indices.length;
+  h = Math.imul(h, 0x01000193);
+  return h >>> 0;
+}
+
+// traits = { stars, closed, spanRatio } — figure → myth steering.
+function figureTraits(indices, stars, w, h) {
+  const closed = indices.length > 1 && indices[0] === indices[indices.length - 1];
+  const distinct = new Set(indices);
+  let span = 0;
+  const pts = [...distinct].map(i => stars[i]);
+  for (let i = 0; i < pts.length; i++) {
+    for (let j = i + 1; j < pts.length; j++) {
+      const dx = pts[i].x - pts[j].x, dy = pts[i].y - pts[j].y;
+      span = Math.max(span, Math.hypot(dx, dy));
+    }
+  }
+  return {
+    stars: distinct.size,
+    closed,
+    spanRatio: span / Math.hypot(w, h),
+  };
+}
+
+globalThis.__logic = { mulberry, makeSky, nearestStar, figureHash, figureTraits };
 })();
 </script>
 <script>
