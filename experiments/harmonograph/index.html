@@ -43,7 +43,18 @@ const sumTerms = (t, terms) =>
 const pendulumPoint = (t, { xTerms, yTerms }) =>
   ({ x: sumTerms(t, xTerms), y: sumTerms(t, yTerms) });
 
-globalThis.__logic = { RATIOS, gcd, period, pendulumPoint };
+// Does the figure repeat with period T? Checked at several sample offsets —
+// a curve that merely passes back through its t=0 point is not "closed".
+function isClosed(params, T, eps) {
+  for (const t0 of [0, 0.317, 0.911, 1.618, 2.42]) {
+    const a = pendulumPoint(t0, params);
+    const b = pendulumPoint(t0 + T, params);
+    if (Math.hypot(b.x - a.x, b.y - a.y) > eps) return false;
+  }
+  return true;
+}
+
+globalThis.__logic = { RATIOS, gcd, period, pendulumPoint, isClosed };
 })();
 </script>
 <script>
