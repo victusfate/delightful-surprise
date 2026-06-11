@@ -84,7 +84,167 @@ function figureTraits(indices, stars, w, h) {
   };
 }
 
-globalThis.__logic = { mulberry, makeSky, nearestStar, figureHash, figureTraits };
+// ---------- the forge ----------
+
+const pickFrom = (rng, arr) => arr[(rng() * arr.length) | 0];
+
+// Syllable grammar: onset+vowel syllables, optional word-final coda.
+// Clusters never exceed two consonants, so names stay pronounceable.
+const ONSETS = ['b', 'c', 'd', 'f', 'g', 'h', 'k', 'l', 'm', 'n', 'p', 'r',
+  's', 't', 'v', 'z', 'th', 'ph', 'ch', 'br', 'cr', 'dr', 'tr', 'pl', 'gl',
+  'st', 'sk', 'vr', 'rh', 'sm'];
+const VOWELS = ['a', 'e', 'i', 'o', 'u', 'a', 'e', 'o', 'a', 'i', 'e', 'o',
+  'ae', 'ia', 'ea', 'ei', 'y'];
+const CODAS = ['', '', '', 'n', 'r', 's', 'l', 'x', 'm', 'th', 'nd'];
+
+function forgeName(rng) {
+  for (;;) {
+    const roll = rng();
+    const syllables = roll < 0.4 ? 2 : roll < 0.9 ? 3 : 4;
+    let name = '';
+    let diphthongs = 0;
+    for (let i = 0; i < syllables; i++) {
+      name += pickFrom(rng, ONSETS);
+      let v = pickFrom(rng, VOWELS);
+      if (v.length > 1 && diphthongs++) v = v[0]; // at most one diphthong per name
+      name += v;
+    }
+    name += pickFrom(rng, CODAS);
+    if (name.length >= 4 && name.length <= 11) {
+      return name[0].toUpperCase() + name.slice(1);
+    }
+  }
+}
+
+const GREEK = ['α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ', 'ι', 'κ', 'λ', 'μ', 'ν'];
+const LATIN = ['Borealis', 'Australis', 'Occidua', 'Profunda', 'Antiqua',
+  'Serena', 'Obscura', 'Immortalis', 'Marina', 'Hiemalis'];
+
+// ---------- myth grammar ----------
+// Three solemn sentences: origin, trial, celestial reward. The figure's
+// traits choose the family; closed loops always forge crowns and rings.
+
+const HEROES = [
+  'a queen of the salt plains',
+  'the last oarsman of a drowned king',
+  'a blind cartographer of coasts no ship survived',
+  'the daughter of the winter tide',
+  'a smith who spoke only in iron',
+  'the watchman of a city now nameless',
+  'an astronomer who would not sleep',
+  'a weaver of funeral sails',
+  'the harpist of the low marshes',
+  'the lamplighter of the drowned quarter',
+  'a shepherd who counted no flock but the rain',
+  'the gravedigger who sang to the unburied',
+];
+
+const ORIGINS = [
+  'the tide forgets its salt',
+  'the mountains keep their oldest snow',
+  'no road remembers its makers',
+  'the reeds bow to a wind no one feels',
+  'the sea practices its grief on the rocks',
+];
+
+const VIRTUES = [
+  'kept faith with the silence',
+  'asked the night for nothing',
+  'owed the daylight no debts',
+  'spoke kindly to the things that drown',
+  'never once mistook a lantern for the dawn',
+];
+
+const BETRAYERS = [
+  'the king of the inland sea',
+  'a jealous god of small harvests',
+  'the first frost',
+  'a brother sworn at the same fire',
+  'the council of the seven harbors',
+];
+
+const SENTENCE_1 = [
+  (rng, name) => `In the elder dark, ${name} was ${pickFrom(rng, HEROES)}, and ${pickFrom(rng, VIRTUES)}.`,
+  (rng, name) => `Before any chart was drawn, ${name} was ${pickFrom(rng, HEROES)} in the country below these stars.`,
+  (rng, name) => `The old songs say ${name} was ${pickFrom(rng, HEROES)}, born where ${pickFrom(rng, ORIGINS)}.`,
+];
+
+const FAMILIES = {
+  crown: {
+    s2: [
+      (rng, name) => `When ${pickFrom(rng, BETRAYERS)} demanded tribute, ${name} refused, and bent the demand itself into a ring that no hand could break.`,
+      (rng, name) => `In the year of the long eclipse, ${pickFrom(rng, BETRAYERS)} stole the crown that ${name} had guarded, and the theft hollowed the kingdom like a winter.`,
+      (rng, name) => `For ${name} the smiths of heaven beat a circlet of cold gold, and the jealous earth found no brow worthy to wear it.`,
+    ],
+    s3: [
+      () => 'The heavens, who keep what the earth cannot, set the ring among the stars, where it closes still.',
+      (rng, name) => `Now the crown burns unworn above us, and ${name} is its only keeper.`,
+      () => 'Look up in the cold months and the circlet is there, complete, owing nothing to any throne.',
+    ],
+  },
+  river: {
+    s2: [
+      (rng, name) => `Grief carried ${name} farther than any road, until the sorrow itself wore down into a river.`,
+      (rng, name) => `${name} walked from the headwaters of one age to the estuary of another, naming every dark mile of the water.`,
+      (rng, name) => `When the flood took everything ${name} had loved, ${name} followed the water upstream to ask it why.`,
+    ],
+    s3: [
+      () => 'The heavens took up the river and laid it across the sky, so that no thirst would be forgotten.',
+      (rng, name) => `Its current runs there still, slow and bright, carrying the name of ${name} toward morning.`,
+      () => 'And the river remembers, as rivers do, every stone that ever told it no.',
+    ],
+  },
+  pursuit: {
+    s2: [
+      (rng, name) => `For ${pickFrom(rng, ['nine winters', 'a hundred seasons', 'the length of three lifetimes'])} ${name} pursued the ${pickFrom(rng, ['white stag of the ice fields', 'beast that cast no shadow', 'thief of the first fire'])} across ${pickFrom(rng, ['the salt flats and the burning meadows', 'kingdoms that fell as they passed', 'the floors of vanished seas'])}, never once breaking stride.`,
+      (rng, name) => `${name} hunted what could not be caught, and was in turn hunted by what could not be escaped, and neither would yield the road.`,
+    ],
+    s3: [
+      () => 'The chase never ended; the heavens, in mercy, made it endless instead, star following star forever.',
+      () => 'Neither hunter nor hunted ever tired, so the sky agreed to hold the hunt where every age could witness it.',
+    ],
+  },
+  vigil: {
+    s2: [
+      (rng, name) => `When ${pickFrom(rng, BETRAYERS)} broke the old oath, ${name} alone kept the watch, and the watch was long.`,
+      (rng, name) => `${name} was given ${pickFrom(rng, ['a lantern that burned seawater', 'the last seed of a felled orchard', 'an oath written in frost', 'the key to a door that no longer stood'])} and told to guard it, and guarded it past the end of the giving.`,
+    ],
+    s3: [
+      (rng, name) => `For that faith the heavens raised ${name} entire into the quiet of the stars.`,
+      () => 'The stars took the shape of that vigil, and keep it, as the faithful are kept.',
+    ],
+  },
+};
+
+function mythFamily(traits) {
+  if (traits.closed) return 'crown';
+  if (traits.spanRatio >= 0.5) return 'river';
+  if (traits.stars >= 7) return 'pursuit';
+  return 'vigil';
+}
+
+function forgeMyth(rng, traits, name) {
+  const who = name || forgeName(rng);
+  const family = FAMILIES[mythFamily(traits)];
+  const s1 = pickFrom(rng, SENTENCE_1)(rng, who);
+  const s2 = pickFrom(rng, family.s2)(rng, who);
+  const s3 = pickFrom(rng, family.s3)(rng, who);
+  return `${s1} ${s2} ${s3}`;
+}
+
+// Composite: one seed -> the whole engraving.
+function forgeLegend(seed, traits) {
+  const rng = mulberry(seed);
+  const name = forgeName(rng);
+  const designation = `${pickFrom(rng, GREEK)} ${name} ${pickFrom(rng, LATIN)}`;
+  const myth = forgeMyth(rng, traits, name);
+  return { name, designation, myth };
+}
+
+globalThis.__logic = {
+  mulberry, makeSky, nearestStar, figureHash, figureTraits,
+  forgeName, forgeMyth, forgeLegend,
+};
 })();
 </script>
 <script>
