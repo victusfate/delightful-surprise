@@ -50,7 +50,41 @@ function scheduleTimes(pattern, stepDur, t0) {
   return times;
 }
 
-globalThis.__logic = { euclid, patternString, rotate, scheduleTimes };
+// World rhythms. rings order = [kick, snare, hat, bell]; rot rotates the
+// Euclidean pattern to taste (e.g. snare backbeats). Headline (k, n) is the
+// named pattern and always lands on one of the rings.
+const PRESETS = [
+  { name: 'Tresillo',  k: 3, n: 8,
+    rings: [{ k: 3, n: 8 }, { k: 2, n: 8, rot: 2 }, { k: 8, n: 8 }, { k: 2, n: 8, rot: 3 }] },
+  { name: 'Cinquillo', k: 5, n: 8,
+    rings: [{ k: 2, n: 8 }, { k: 1, n: 8, rot: 4 }, { k: 4, n: 8, rot: 1 }, { k: 5, n: 8 }] },
+  { name: 'Khafif',    k: 2, n: 5,
+    rings: [{ k: 2, n: 5 }, { k: 1, n: 5, rot: 2 }, { k: 5, n: 5 }, { k: 1, n: 5, rot: 4 }] },
+  { name: 'Money',     k: 3, n: 7,
+    rings: [{ k: 3, n: 7 }, { k: 1, n: 7, rot: 3 }, { k: 7, n: 7 }, { k: 2, n: 7, rot: 5 }] },
+  { name: 'Samba',     k: 7, n: 16,
+    rings: [{ k: 4, n: 16 }, { k: 2, n: 16, rot: 4 }, { k: 8, n: 16 }, { k: 7, n: 16 }] },
+  { name: 'Bossa',     k: 5, n: 16,
+    rings: [{ k: 4, n: 16 }, { k: 2, n: 16, rot: 4 }, { k: 8, n: 16 }, { k: 5, n: 16 }] },
+];
+
+// Dice roll: random (k, n) per ring inside taste bounds — kick stays
+// sparse, hat stays busy — so the result almost always grooves.
+function rollRings(rng) {
+  const ri = (a, b) => a + Math.floor(rng() * (b - a + 1));
+  const kickN = ri(4, 16);
+  const snareN = ri(4, 16);
+  const hatN = ri(4, 16);
+  const bellN = ri(4, 16);
+  return [
+    { k: ri(1, Math.max(1, Math.round(kickN / 4))), n: kickN },
+    { k: ri(1, Math.max(1, Math.round(snareN / 3))), n: snareN },
+    { k: ri(Math.ceil(hatN / 2), hatN), n: hatN },
+    { k: ri(1, Math.max(2, Math.round(bellN / 2))), n: bellN },
+  ];
+}
+
+globalThis.__logic = { euclid, patternString, rotate, scheduleTimes, PRESETS, rollRings };
 })();
 </script>
 <script>
