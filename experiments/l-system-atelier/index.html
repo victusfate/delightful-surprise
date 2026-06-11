@@ -26,7 +26,45 @@ function expand(axiom, rules, n) {
   return s;
 }
 
-globalThis.__logic = { expand };
+// interpret: turtle walk. F draws, f moves, +/- turn by `angle` degrees,
+// [ pushes state, ] pops; everything else is silent. Starts at (0,0)
+// heading up (screen coords). Returns segments {x1,y1,x2,y2,depth} and the
+// tight bounding box of all endpoints. Pure trig, no canvas.
+function interpret(s, { angle, step }) {
+  const rad = angle * Math.PI / 180;
+  let x = 0, y = 0, h = -Math.PI / 2, depth = 0;
+  const stack = [];
+  const segments = [];
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const see = (px, py) => {
+    if (px < minX) minX = px; if (px > maxX) maxX = px;
+    if (py < minY) minY = py; if (py > maxY) maxY = py;
+  };
+  for (const ch of s) {
+    if (ch === 'F') {
+      const nx = x + Math.cos(h) * step, ny = y + Math.sin(h) * step;
+      segments.push({ x1: x, y1: y, x2: nx, y2: ny, depth });
+      see(x, y); see(nx, ny);
+      x = nx; y = ny;
+    } else if (ch === 'f') {
+      x += Math.cos(h) * step; y += Math.sin(h) * step;
+    } else if (ch === '+') {
+      h -= rad;
+    } else if (ch === '-') {
+      h += rad;
+    } else if (ch === '[') {
+      stack.push({ x, y, h });
+      depth++;
+    } else if (ch === ']') {
+      const t = stack.pop();
+      if (t) { x = t.x; y = t.y; h = t.h; depth--; }
+    }
+    // other symbols: silent growth markers
+  }
+  return { segments, bounds: { minX, minY, maxX, maxY } };
+}
+
+globalThis.__logic = { expand, interpret };
 })();
 </script>
 </body>
