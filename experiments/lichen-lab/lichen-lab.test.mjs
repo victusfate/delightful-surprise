@@ -50,3 +50,81 @@ test('PRESETS: six temperament-labeled rules, all parseable', () => {
   }
   assert.equal(labels.size, 6, 'temperament labels must be unique');
 });
+
+// ---------- slice 2 — neighbors and step ----------
+
+function gridFrom(w, h, cells) {
+  const g = new Uint8Array(w * h);
+  for (const [x, y] of cells) g[y * w + x] = 1;
+  return g;
+}
+const liveSet = (g, w) =>
+  new Set([...g].flatMap((v, i) => (v ? [`${i % w},${(i / w) | 0}`] : [])));
+
+test('countNeighbors: toroidal wrap — (0,0) neighbors (w-1,h-1)', () => {
+  const { countNeighbors } = loadLogic(HTML);
+  const w = 5, h = 4;
+  const g = gridFrom(w, h, [[w - 1, h - 1]]);
+  assert.equal(countNeighbors(g, w, h, 0, 0), 1);
+  assert.equal(countNeighbors(g, w, h, 2, 2), 0);
+});
+
+test('countNeighbors: full Moore neighborhood counts 8', () => {
+  const { countNeighbors } = loadLogic(HTML);
+  const w = 5, h = 5;
+  const cells = [];
+  for (let dy = -1; dy <= 1; dy++)
+    for (let dx = -1; dx <= 1; dx++)
+      if (dx || dy) cells.push([2 + dx, 2 + dy]);
+  const g = gridFrom(w, h, cells);
+  assert.equal(countNeighbors(g, w, h, 2, 2), 8);
+});
+
+test('step: blinker under Life oscillates with period 2', () => {
+  const { step, parseRule } = loadLogic(HTML);
+  const w = 7, h = 7, life = parseRule('B3/S23');
+  const horiz = gridFrom(w, h, [[2, 3], [3, 3], [4, 3]]);
+  const g1 = step(horiz, w, h, life);
+  assert.deepEqual(liveSet(g1, w), new Set(['3,2', '3,3', '3,4']));
+  const g2 = step(g1, w, h, life);
+  assert.deepEqual(liveSet(g2, w), liveSet(horiz, w));
+});
+
+test('step: block under Life is a still life', () => {
+  const { step, parseRule } = loadLogic(HTML);
+  const w = 6, h = 6, life = parseRule('B3/S23');
+  const block = gridFrom(w, h, [[2, 2], [3, 2], [2, 3], [3, 3]]);
+  assert.deepEqual(liveSet(step(block, w, h, life), w), liveSet(block, w));
+});
+
+test('step: glider under Life translates by (1,1) after 4 generations', () => {
+  const { step, parseRule } = loadLogic(HTML);
+  const w = 10, h = 10, life = parseRule('B3/S23');
+  const glider = [[1, 0], [2, 1], [0, 2], [1, 2], [2, 2]];
+  let g = gridFrom(w, h, glider);
+  for (let i = 0; i < 4; i++) g = step(g, w, h, life);
+  const want = new Set(glider.map(([x, y]) => `${(x + 1) % w},${(y + 1) % h}`));
+  assert.deepEqual(liveSet(g, w), want);
+});
+
+test('step: under Seeds (S empty) no cell survives to the next generation', () => {
+  const { step, parseRule } = loadLogic(HTML);
+  const w = 9, h = 9, seeds = parseRule('B2/S');
+  const g = gridFrom(w, h, [[3, 3], [4, 3], [4, 4], [6, 6], [2, 7]]);
+  const next = step(g, w, h, seeds);
+  for (let i = 0; i < w * h; i++) {
+    if (g[i] === 1) assert.equal(next[i], 0, `cell ${i} survived under Seeds`);
+  }
+});
+
+test('step: returns a fresh Uint8Array of 0/1 and leaves the input intact', () => {
+  const { step, parseRule } = loadLogic(HTML);
+  const w = 7, h = 7, life = parseRule('B3/S23');
+  const g = gridFrom(w, h, [[2, 3], [3, 3], [4, 3]]);
+  const before = Uint8Array.from(g);
+  const next = step(g, w, h, life);
+  assert.ok(next instanceof Uint8Array);
+  assert.notEqual(next, g);
+  assert.deepEqual(g, before, 'input grid must not be mutated');
+  for (const v of next) assert.ok(v === 0 || v === 1);
+});
