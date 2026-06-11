@@ -31,7 +31,39 @@ function clampSpeed(v, min, max) {
   return { x: v.x * k, y: v.y * k };
 }
 
-globalThis.__logic = { limit, clampSpeed };
+// Steer away from neighbors, weighted by inverse distance — the closer the
+// neighbor, the harder the push.
+function separation(b, neighbors) {
+  let x = 0, y = 0;
+  for (const n of neighbors) {
+    const dx = b.x - n.x, dy = b.y - n.y;
+    const d = Math.hypot(dx, dy);
+    if (d === 0) continue;
+    x += dx / (d * d);
+    y += dy / (d * d);
+  }
+  return { x, y };
+}
+
+// Steer toward the neighbors' average velocity (heading).
+function alignment(b, neighbors) {
+  if (neighbors.length === 0) return { x: 0, y: 0 };
+  let vx = 0, vy = 0;
+  for (const n of neighbors) { vx += n.vx; vy += n.vy; }
+  vx /= neighbors.length; vy /= neighbors.length;
+  return { x: vx - b.vx, y: vy - b.vy };
+}
+
+// Steer toward the neighbors' centroid.
+function cohesion(b, neighbors) {
+  if (neighbors.length === 0) return { x: 0, y: 0 };
+  let cx = 0, cy = 0;
+  for (const n of neighbors) { cx += n.x; cy += n.y; }
+  cx /= neighbors.length; cy /= neighbors.length;
+  return { x: cx - b.x, y: cy - b.y };
+}
+
+globalThis.__logic = { limit, clampSpeed, separation, alignment, cohesion };
 })();
 </script>
 </body>
