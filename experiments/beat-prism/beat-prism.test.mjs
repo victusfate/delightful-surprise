@@ -412,6 +412,53 @@ test('stepGrid: returns new state without mutating the input', () => {
   assert.deepEqual(JSON.parse(JSON.stringify(g)), snapshot);
 });
 
+// ---------- fx slice 3 — grid events ----------
+
+// 8 clean onsets at 120 BPM → anchor 3500, period 500, anchor beat #7.
+const lockedGrid = stepGrid => feedGrid(stepGrid, beatTrain(120, 8), 120);
+
+test('gridEvents: beats crossed between two timestamps, in order', () => {
+  const { stepGrid, gridEvents } = loadLogic(HTML);
+  const ev = gridEvents(lockedGrid(stepGrid), 3600, 5100);
+  assert.deepEqual(ev.map(e => e.timeMs), [4000, 4500, 5000]);
+  assert.deepEqual(ev.map(e => e.beatIndex), [8, 9, 10]);
+});
+
+test('gridEvents: half-open windows never double-fire a beat', () => {
+  const { stepGrid, gridEvents } = loadLogic(HTML);
+  const g = lockedGrid(stepGrid);
+  // boundary lands exactly on the 4000 ms beat: it belongs to the first window
+  const a = gridEvents(g, 3600, 4000);
+  const b = gridEvents(g, 4000, 5100);
+  assert.deepEqual(a.map(e => e.timeMs), [4000]);
+  assert.deepEqual(b.map(e => e.timeMs), [4500, 5000]);
+});
+
+test('gridEvents: every 4th beat is a bar with the right barIndex', () => {
+  const { stepGrid, gridEvents } = loadLogic(HTML);
+  const ev = gridEvents(lockedGrid(stepGrid), 3500, 7500);   // beats 8..15
+  assert.equal(ev.length, 8);
+  const bars = ev.filter(e => e.isBar);
+  assert.deepEqual(bars.map(e => e.beatIndex), [8, 12]);
+  assert.deepEqual(bars.map(e => e.barIndex), [2, 3]);
+  for (const e of ev) assert.equal(e.barIndex, Math.floor(e.beatIndex / 4));
+});
+
+test('gridEvents: silent unless the grid is confident', () => {
+  const { stepGrid, gridEvents } = loadLogic(HTML);
+  let g = lockedGrid(stepGrid);
+  g = stepGrid(g, null, 120, 7600);   // lapse
+  assert.deepEqual(gridEvents(g, 3600, 5100), []);
+  assert.deepEqual(gridEvents(stepGrid(null, 0, 120, 0), 0, 5000), [], 'one onset, no confidence');
+});
+
+test('gridEvents: degenerate or reversed windows yield nothing', () => {
+  const { stepGrid, gridEvents } = loadLogic(HTML);
+  const g = lockedGrid(stepGrid);
+  assert.deepEqual(gridEvents(g, 5000, 5000), []);
+  assert.deepEqual(gridEvents(g, 5100, 3600), []);
+});
+
 test('ringIndex: wraps backward through a 12-slot ring', () => {
   const { ringIndex } = loadLogic(HTML);
   assert.equal(ringIndex(5, 0, 12), 5);
