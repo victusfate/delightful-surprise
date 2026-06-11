@@ -35,7 +35,15 @@ const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
 // is 2π — the longer (slower) pendulum's full cycle.
 const period = ({ p, q }) => TAU / gcd(p, q);
 
-globalThis.__logic = { RATIOS, gcd, period };
+// One damped sinusoid {A, f, phi, d} is a "term"; an axis is the sum of its
+// terms: Σᵢ Aᵢ·sin(fᵢ·t + φᵢ)·e^(−dᵢ·t).
+const sumTerms = (t, terms) =>
+  terms.reduce((s, { A, f, phi, d }) => s + A * Math.sin(f * t + phi) * Math.exp(-d * t), 0);
+
+const pendulumPoint = (t, { xTerms, yTerms }) =>
+  ({ x: sumTerms(t, xTerms), y: sumTerms(t, yTerms) });
+
+globalThis.__logic = { RATIOS, gcd, period, pendulumPoint };
 })();
 </script>
 <script>
