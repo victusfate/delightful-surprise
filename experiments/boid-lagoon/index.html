@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>boid lagoon — a midnight aquarium</title>
+</head>
+<body>
+
+<script id="logic">
+'use strict';
+// Pure, DOM-free boid math — extracted and unit-tested in Node via
+// experiments/_harness/logic.mjs (see docs/boid-lagoon/plan.md).
+// IIFE so only __logic reaches the shared global scope.
+(() => {
+
+// Scale v down to magnitude `max` if it is longer; never scales up.
+function limit(v, max) {
+  const m = Math.hypot(v.x, v.y);
+  if (m <= max || m === 0) return { x: v.x, y: v.y };
+  const k = max / m;
+  return { x: v.x * k, y: v.y * k };
+}
+
+// Clamp speed to [min, max], preserving direction. The zero vector gets a
+// deterministic fallback heading at min speed — fish never stall.
+function clampSpeed(v, min, max) {
+  const m = Math.hypot(v.x, v.y);
+  if (m === 0) return { x: min, y: 0 };
+  const k = m > max ? max / m : m < min ? min / m : 1;
+  return { x: v.x * k, y: v.y * k };
+}
+
+globalThis.__logic = { limit, clampSpeed };
+})();
+</script>
+</body>
+</html>
