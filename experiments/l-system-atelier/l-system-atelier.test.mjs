@@ -210,3 +210,47 @@ test('mutate: is deterministic for a fixed rng seed', () => {
   const rules = { X: 'F[+X][-X]FX', F: 'FF' };
   assert.deepEqual(mutate(rules, makeRng(42)), mutate(rules, makeRng(42)));
 });
+
+// ---------- slice 4 — PRESETS ----------
+
+const PRESET_NAMES = ['Fern', 'Weed', 'Bush', 'Snowflake', 'Dragon', 'Sparse'];
+
+test('PRESETS: ships exactly the six named systems', () => {
+  const { PRESETS } = loadLogic(HTML);
+  assert.deepEqual(Object.keys(PRESETS).sort(), [...PRESET_NAMES].sort());
+});
+
+test('PRESETS: each is a well-formed {axiom, rules, angle, iterations}', () => {
+  const { PRESETS, validate } = loadLogic(HTML);
+  for (const name of PRESET_NAMES) {
+    const p = PRESETS[name];
+    assert.equal(typeof p.axiom, 'string', `${name} axiom`);
+    assert.ok(p.axiom.length > 0, `${name} axiom non-empty`);
+    const ruleCount = Object.keys(p.rules).length;
+    assert.ok(ruleCount >= 1 && ruleCount <= 3, `${name} has 1-3 rules (panel limit)`);
+    assert.ok(Number.isFinite(p.angle), `${name} angle`);
+    assert.ok(Number.isInteger(p.iterations) && p.iterations >= 1, `${name} iterations`);
+    assert.equal(validate(p.axiom, p.rules, p.iterations), null, `${name} validates`);
+  }
+});
+
+test('PRESETS: each expands and interprets to 1..60k segments with finite, non-degenerate bounds', () => {
+  const { PRESETS, expand, interpret } = loadLogic(HTML);
+  for (const name of PRESET_NAMES) {
+    const p = PRESETS[name];
+    const s = expand(p.axiom, p.rules, p.iterations);
+    const { segments, bounds } = interpret(s, { angle: p.angle, step: 5 });
+    assert.ok(segments.length >= 1, `${name} draws something`);
+    assert.ok(segments.length <= 60000, `${name} stays under 60k segments (got ${segments.length})`);
+    for (const v of [bounds.minX, bounds.minY, bounds.maxX, bounds.maxY]) {
+      assert.ok(Number.isFinite(v), `${name} bounds finite`);
+    }
+    assert.ok(bounds.maxX - bounds.minX > 0 || bounds.maxY - bounds.minY > 0, `${name} is not a point`);
+  }
+});
+
+test('PRESETS: presets are visually distinct systems (no duplicate rule sets)', () => {
+  const { PRESETS } = loadLogic(HTML);
+  const sigs = new Set(Object.values(PRESETS).map(p => p.axiom + '|' + JSON.stringify(p.rules)));
+  assert.equal(sigs.size, PRESET_NAMES.length);
+});
