@@ -102,7 +102,34 @@ function charFor(biome, h) {
   return chars[Math.min(chars.length - 1, Math.floor(f * chars.length))];
 }
 
-globalThis.__logic = { mulberry, makeNoise, fbm, BIOMES, biomeFor, charFor };
+// ---------- region names ----------
+// Syllable grammar: onset + vowel per syllable, a single coda only on the
+// final syllable — so no word ever contains a 3+ consonant run.
+const ONSETS = ['b', 'd', 'f', 'g', 'h', 'k', 'l', 'm', 'n', 'p', 'r', 's', 't', 'v', 'th', 'sh', 'br', 'dr', 'gr', 'kr', 'tr', '']; // '' = vowel-initial
+const VOWELS = ['a', 'e', 'i', 'o', 'u', 'a', 'e', 'o', 'ae', 'ai', 'ei', 'ia'];
+const CODAS = ['', '', 'n', 'r', 'l', 's', 'th', 'nd'];
+
+function nameWord(rng) {
+  const sylls = 1 + Math.floor(rng() * 2);
+  let w = '';
+  for (let i = 0; i < sylls; i++) {
+    w += ONSETS[Math.floor(rng() * ONSETS.length)] + VOWELS[Math.floor(rng() * VOWELS.length)];
+  }
+  w += CODAS[Math.floor(rng() * CODAS.length)];
+  return w.charAt(0).toUpperCase() + w.slice(1);
+}
+
+// deterministic, biome-flavored region name for block (bx, by)
+function regionName(bx, by, dominantBiome, seed = 0) {
+  const h = (Math.imul(bx, 374761393) ^ Math.imul(by, 668265263) ^ Math.imul(seed | 0, 974634599)) >>> 0;
+  const rng = mulberry(h);
+  const suffixes = BIOMES[dominantBiome].suffixes;
+  const suffix = suffixes[Math.floor(rng() * suffixes.length)];
+  const article = rng() < 0.35 ? 'The ' : '';
+  return `${article}${nameWord(rng)} ${suffix}`;
+}
+
+globalThis.__logic = { mulberry, makeNoise, fbm, BIOMES, biomeFor, charFor, regionName };
 })();
 </script>
 </body>
