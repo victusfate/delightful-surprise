@@ -4,8 +4,40 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>pocket orrery — fling planets, compose orbits</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #020111; }
+  canvas { display: block; cursor: crosshair; }
+  #ui {
+    position: fixed; inset: 0; pointer-events: none;
+    font-family: Georgia, 'Times New Roman', serif; color: #ffe9c4;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; transition: opacity 2.5s ease; text-shadow: 0 0 18px rgba(255,190,90,.45);
+  }
+  #ui h1 { font-size: 2.6rem; font-weight: normal; letter-spacing: .35em; margin: 0 0 .6rem; opacity: .92; }
+  #ui p { font-size: 1rem; letter-spacing: .12em; opacity: .65; margin: .25rem 0; }
+  #ui.hidden { opacity: 0; }
+  #hint {
+    position: fixed; bottom: 14px; right: 18px; pointer-events: none;
+    font-family: Georgia, serif; font-size: .78rem; letter-spacing: .1em;
+    color: rgba(255,220,170,.45);
+  }
+  #toast {
+    position: fixed; top: 22px; left: 50%; transform: translateX(-50%);
+    pointer-events: none; font-family: Georgia, serif; font-size: .9rem;
+    letter-spacing: .15em; color: rgba(255,230,190,.85);
+    text-shadow: 0 0 14px rgba(255,190,90,.6); opacity: 0; transition: opacity .6s ease;
+  }
+</style>
 </head>
 <body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h1>pocket orrery</h1>
+  <p>press anywhere, drag, release — gravity does the rest</p>
+  <p>every completed orbit hums a note</p>
+</div>
+<div id="hint">[c]lear planets &nbsp; [m]ute</div>
+<div id="toast"></div>
 
 <script id="logic">
 'use strict';
@@ -119,6 +151,402 @@ const SCALE = [0, 3, 5, 7, 10, 12, 15, 17, 19, 22, 24];
 
 globalThis.__logic = { gravityAccel, stepBodies, mergeBodies, orbitCount, noteForMass, SCALE };
 })();
+</script>
+<script>
+'use strict';
+const { stepBodies, mergeBodies, orbitCount, noteForMass, SCALE } = globalThis.__logic;
+
+// ---------- tiny utils ----------
+const TAU = Math.PI * 2;
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+// ---------- tuning ----------
+const G = 4000;
+const SUN_MASS = 3200;
+const SUN_RADIUS = 26;
+const FLING_K = 1.6;           // drag px → velocity px/s
+const DT = 1 / 120;            // fixed physics substep
+const TRAIL_MAX = 200;
+const TRAIL_EVERY = 3;         // substeps between trail samples
+const MAX_PLANETS = 24;
+const FREQ_ROOT = 110;         // A2 — SCALE offsets climb from here
+
+// ---------- canvas ----------
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, DPR = 1, cullR = 4000;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  cullR = 3 * Math.max(W, H);
+  makeStars();
+}
+window.addEventListener('resize', resize);
+
+// world coords: sun pinned at (0,0); screen = world + (W/2, H/2)
+const toWorld = (cx, cy) => ({ x: cx - W / 2, y: cy - H / 2 });
+
+// ---------- starfield ----------
+let stars = [];
+function makeStars() {
+  stars = [];
+  const n = Math.floor(W * H / 8000);
+  for (let i = 0; i < n; i++) {
+    stars.push({
+      x: Math.random() * W, y: Math.random() * H,
+      r: rand(0.3, 1.3), tw: rand(0.4, 2.2), ph: rand(0, TAU),
+    });
+  }
+}
+
+// ---------- the system ----------
+let bodies = [{ x: 0, y: 0, vx: 0, vy: 0, mass: SUN_MASS, radius: SUN_RADIUS, hue: 42, fixed: true }];
+const sun = () => bodies[0];
+
+// per-body app state (trails, winding) — survives merges via onMerge
+const aux = new WeakMap();
+function auxOf(b) {
+  let a = aux.get(b);
+  if (!a) {
+    a = { trail: [], count: 0, prevAngle: Math.atan2(b.y, b.x), orbits: 0, tick: 0 };
+    aux.set(b, a);
+  }
+  return a;
+}
+
+function spawnPlanet(x, y, vx, vy) {
+  const mass = rand(3, 20);
+  const b = {
+    x, y, vx, vy, mass,
+    radius: Math.cbrt(mass) * 2.6,
+    hue: rand(0, 360),
+    fixed: false,
+  };
+  if (bodies.length - 1 >= MAX_PLANETS) bodies.splice(1, 1); // oldest yields
+  bodies.push(b);
+  auxOf(b);
+  flingSwish();
+  return b;
+}
+
+function onMerge(m, a, b) {
+  if (m.fixed) {                       // the sun fed — pin its center
+    m.x = 0; m.y = 0;
+    sunFlare = 1;
+  }
+  aux.set(m, { trail: [], count: 0, prevAngle: Math.atan2(m.y, m.x), orbits: 0, tick: 0 });
+  rings.push({ x: m.x, y: m.y, born: now, life: 0.9, maxR: m.radius * 6 + 18, hue: m.fixed ? 42 : m.hue, width: 2.5 });
+  thump(m.fixed);
+}
+
+// ---------- winding → notes ----------
+function updateWinding(b) {
+  const a = auxOf(b);
+  const ang = Math.atan2(b.y, b.x);
+  a.count = orbitCount(a.prevAngle, ang, a.count);
+  a.prevAngle = ang;
+  const done = Math.floor(Math.abs(a.count));
+  if (done > a.orbits) {
+    a.orbits = done;
+    orbitNote(b);
+    rings.push({ x: b.x, y: b.y, born: now, life: 0.7, maxR: b.radius * 5 + 12, hue: b.hue, width: 1.5 });
+  }
+}
+
+// ---------- rings (merge flashes & orbit pulses) ----------
+const rings = [];
+function drawRings(t) {
+  for (let i = rings.length - 1; i >= 0; i--) {
+    const r = rings[i];
+    const f = (t - r.born) / r.life;
+    if (f >= 1) { rings.splice(i, 1); continue; }
+    ctx.globalAlpha = (1 - f) * 0.8;
+    ctx.strokeStyle = `hsl(${r.hue} 90% 72%)`;
+    ctx.lineWidth = r.width * (1 - f) + 0.5;
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, 2 + f * r.maxR, 0, TAU);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ---------- audio ----------
+let AC = null, bus = null, muted = false;
+
+function audioInit() {
+  if (AC) return;
+  try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
+  bus = AC.createGain(); bus.gain.value = muted ? 0 : 0.55;
+  bus.connect(AC.destination);
+  // feedback-delay "space" wet bus
+  const delay = AC.createDelay(1); delay.delayTime.value = 0.31;
+  const fb = AC.createGain(); fb.gain.value = 0.45;
+  const wet = AC.createGain(); wet.gain.value = 0.4;
+  bus.connect(delay); delay.connect(fb); fb.connect(delay); delay.connect(wet); wet.connect(AC.destination);
+  // faint solar drone
+  const lp = AC.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 130; lp.Q.value = 0.7;
+  const padGain = AC.createGain(); padGain.gain.value = 0.04;
+  for (const det of [-5, 4]) {
+    const o = AC.createOscillator(); o.type = 'sawtooth';
+    o.frequency.value = 55; o.detune.value = det;
+    o.connect(lp); o.start();
+  }
+  lp.connect(padGain); padGain.connect(bus);
+  const lfo = AC.createOscillator(); lfo.frequency.value = 0.06;
+  const lfoG = AC.createGain(); lfoG.gain.value = 45;
+  lfo.connect(lfoG); lfoG.connect(lp.frequency); lfo.start();
+}
+
+const freq = semis => FREQ_ROOT * Math.pow(2, semis / 12);
+
+function tone(hz, vol, dur, type = 'triangle', when = 0) {
+  if (!AC) return;
+  const t0 = AC.currentTime + when;
+  const o = AC.createOscillator(); o.type = type; o.frequency.value = hz;
+  const g = AC.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol, t0 + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g); g.connect(bus);
+  o.start(t0); o.stop(t0 + dur + 0.1);
+}
+
+function orbitNote(b) { tone(freq(noteForMass(b.mass, SCALE)), 0.13, 2.2); }
+
+function thump(intoSun) {
+  if (!AC) return;
+  const t0 = AC.currentTime;
+  const o = AC.createOscillator(); o.type = 'sine';
+  o.frequency.setValueAtTime(intoSun ? 70 : 95, t0);
+  o.frequency.exponentialRampToValueAtTime(intoSun ? 30 : 42, t0 + 0.45);
+  const g = AC.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(0.22, t0 + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.55);
+  o.connect(g); g.connect(bus);
+  o.start(t0); o.stop(t0 + 0.6);
+}
+
+function flingSwish() {
+  if (!AC) return;
+  const t0 = AC.currentTime;
+  const o = AC.createOscillator(); o.type = 'sine';
+  o.frequency.setValueAtTime(freq(19), t0);
+  o.frequency.exponentialRampToValueAtTime(freq(7), t0 + 0.25);
+  const g = AC.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(0.05, t0 + 0.03);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.3);
+  o.connect(g); g.connect(bus);
+  o.start(t0); o.stop(t0 + 0.35);
+}
+
+// ---------- toast ----------
+const toastEl = document.getElementById('toast');
+let toastTimer = null;
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.style.opacity = 1;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.style.opacity = 0, 1800);
+}
+
+// ---------- input: press-drag-release fling ----------
+let drag = null; // { sx, sy, cx, cy } in world coords
+let flung = false;
+
+canvas.addEventListener('pointerdown', e => {
+  audioInit();
+  if (AC && AC.state === 'suspended') AC.resume();
+  const p = toWorld(e.clientX, e.clientY);
+  drag = { sx: p.x, sy: p.y, cx: p.x, cy: p.y };
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const p = toWorld(e.clientX, e.clientY);
+  drag.cx = p.x; drag.cy = p.y;
+});
+function release() {
+  if (!drag) return;
+  const vx = (drag.cx - drag.sx) * FLING_K;
+  const vy = (drag.cy - drag.sy) * FLING_K;
+  spawnPlanet(drag.sx, drag.sy, vx, vy);
+  drag = null;
+  if (!flung) { flung = true; document.getElementById('ui').classList.add('hidden'); }
+}
+canvas.addEventListener('pointerup', release);
+canvas.addEventListener('pointercancel', () => { drag = null; });
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'm') {
+    muted = !muted;
+    if (bus) bus.gain.value = muted ? 0 : 0.55;
+    toast(muted ? 'muted' : 'sound on');
+  } else if (e.key === 'c') {
+    bodies = [sun()];
+    rings.length = 0;
+    toast('the void, again');
+  }
+});
+
+// ---------- predicted-path ghost ----------
+function predictPath() {
+  const ghost = {
+    x: drag.sx, y: drag.sy,
+    vx: (drag.cx - drag.sx) * FLING_K, vy: (drag.cy - drag.sy) * FLING_K,
+    mass: 0.001, radius: 0.5, hue: 0, fixed: false,
+  };
+  let sim = bodies.map(b => ({ ...b }));
+  sim.push(ghost);
+  const pts = [];
+  for (let i = 0; i < 420; i++) {
+    sim = stepBodies(sim, 1 / 60, G);
+    if (!sim.includes(ghost)) break;              // swallowed in preview
+    if (Math.hypot(ghost.x, ghost.y) > cullR) break;
+    if (i % 3 === 0) pts.push({ x: ghost.x, y: ghost.y });
+  }
+  return pts;
+}
+
+function drawAim() {
+  const pts = predictPath();
+  // ghost: dots fading with lookahead
+  for (let i = 0; i < pts.length; i++) {
+    ctx.globalAlpha = 0.55 * (1 - i / pts.length);
+    ctx.fillStyle = '#cfd8ff';
+    ctx.beginPath();
+    ctx.arc(pts[i].x, pts[i].y, 1.4, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  // aiming line: spawn → pointer
+  const grad = ctx.createLinearGradient(drag.sx, drag.sy, drag.cx, drag.cy);
+  grad.addColorStop(0, 'rgba(255,225,170,0.15)');
+  grad.addColorStop(1, 'rgba(255,225,170,0.85)');
+  ctx.strokeStyle = grad;
+  ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.moveTo(drag.sx, drag.sy); ctx.lineTo(drag.cx, drag.cy); ctx.stroke();
+  // spawn marker
+  ctx.strokeStyle = 'rgba(255,225,170,0.9)';
+  ctx.beginPath(); ctx.arc(drag.sx, drag.sy, 5, 0, TAU); ctx.stroke();
+}
+
+// ---------- rendering ----------
+function drawSun(t) {
+  const s = sun();
+  const pulse = 1 + Math.sin(t * 0.9) * 0.025 + Math.sin(t * 7.3) * 0.006;
+  const r = s.radius * pulse;
+  // corona
+  const corona = ctx.createRadialGradient(0, 0, r * 0.3, 0, 0, r * 7);
+  corona.addColorStop(0, `rgba(255,190,80,${0.5 + sunFlare * 0.4})`);
+  corona.addColorStop(0.25, 'rgba(255,140,40,0.16)');
+  corona.addColorStop(1, 'rgba(255,110,20,0)');
+  ctx.fillStyle = corona;
+  ctx.fillRect(-r * 7, -r * 7, r * 14, r * 14);
+  // disc
+  const disc = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+  disc.addColorStop(0, '#fffbe8');
+  disc.addColorStop(0.55, '#ffe08a');
+  disc.addColorStop(0.95, '#ff9d3c');
+  disc.addColorStop(1, 'rgba(255,140,40,0.6)');
+  ctx.fillStyle = disc;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fill();
+  sunFlare = Math.max(0, sunFlare - 0.02);
+}
+let sunFlare = 0;
+
+function drawPlanet(b, t) {
+  const a = auxOf(b);
+  // trail
+  const n = a.trail.length;
+  if (n > 1) {
+    ctx.lineCap = 'round';
+    for (let i = 1; i < n; i++) {
+      const f = i / n;
+      ctx.strokeStyle = `hsla(${b.hue} 85% 68% / ${f * 0.45})`;
+      ctx.lineWidth = 0.6 + f * 1.4;
+      ctx.beginPath();
+      ctx.moveTo(a.trail[i - 1].x, a.trail[i - 1].y);
+      ctx.lineTo(a.trail[i].x, a.trail[i].y);
+      ctx.stroke();
+    }
+  }
+  // glow
+  const glow = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.radius * 5);
+  glow.addColorStop(0, `hsla(${b.hue} 90% 70% / 0.35)`);
+  glow.addColorStop(1, `hsla(${b.hue} 90% 70% / 0)`);
+  ctx.fillStyle = glow;
+  ctx.fillRect(b.x - b.radius * 5, b.y - b.radius * 5, b.radius * 10, b.radius * 10);
+  // disc with a lit limb facing the sun
+  const ang = Math.atan2(-b.y, -b.x);
+  const lx = b.x + Math.cos(ang) * b.radius * 0.45;
+  const ly = b.y + Math.sin(ang) * b.radius * 0.45;
+  const disc = ctx.createRadialGradient(lx, ly, 0, b.x, b.y, b.radius * 1.05);
+  disc.addColorStop(0, `hsl(${b.hue} 80% 88%)`);
+  disc.addColorStop(0.6, `hsl(${b.hue} 75% 62%)`);
+  disc.addColorStop(1, `hsl(${b.hue} 70% 30%)`);
+  ctx.fillStyle = disc;
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, TAU); ctx.fill();
+}
+
+// ---------- main loop ----------
+let now = 0, last = 0, phys = 0;
+function frame(ms) {
+  now = ms / 1000;
+  const dt = clamp(now - last || 0.016, 0, 0.05);
+  last = now;
+
+  // physics at fixed dt
+  phys += dt;
+  while (phys >= DT) {
+    phys -= DT;
+    bodies = stepBodies(bodies, DT, G, { cullRadius: cullR, onMerge });
+    for (let i = 1; i < bodies.length; i++) {
+      const b = bodies[i];
+      updateWinding(b);
+      const a = auxOf(b);
+      if (++a.tick % TRAIL_EVERY === 0) {
+        a.trail.push({ x: b.x, y: b.y });
+        if (a.trail.length > TRAIL_MAX) a.trail.shift();
+      }
+    }
+  }
+
+  // night sky
+  const sky = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.75);
+  sky.addColorStop(0, '#0a0a26');
+  sky.addColorStop(0.5, '#050418');
+  sky.addColorStop(1, '#020111');
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+
+  // stars
+  for (const s of stars) {
+    const tw = 0.3 + 0.7 * ((Math.sin(now * s.tw + s.ph) + 1) / 2);
+    ctx.globalAlpha = tw;
+    ctx.fillStyle = '#dfe6ff';
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, TAU); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // world space, sun at center
+  ctx.translate(W / 2, H / 2);
+  drawSun(now);
+  for (let i = 1; i < bodies.length; i++) drawPlanet(bodies[i], now);
+  drawRings(now);
+  if (drag) drawAim();
+
+  requestAnimationFrame(frame);
+}
+
+resize();
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>
