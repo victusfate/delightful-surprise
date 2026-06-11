@@ -67,6 +67,35 @@ test('generateMaze: different seeds produce different walls', () => {
   assert.notDeepEqual(Array.from(a.walls), Array.from(b.walls));
 });
 
+// ---------- slice 3: structural acceptance of the logic surface ----------
+
+test('structure: logic block exports the full documented surface', () => {
+  const logic = loadLogic(HTML);
+  for (const fn of ['mulberry', 'generateMaze', 'solve', 'canMove', 'neighbors']) {
+    assert.equal(typeof logic[fn], 'function', `${fn} must be a function`);
+  }
+  assert.equal(typeof logic.DIRS, 'object', 'DIRS must be an object');
+  for (const key of ['N', 'E', 'S', 'W']) {
+    const d = logic.DIRS[key];
+    assert.ok(d && typeof d.bit === 'number' && typeof d.opp === 'number',
+      `DIRS.${key} must carry bit and opp`);
+  }
+  // bitmask convention from the design: N=1, E=2, S=4, W=8
+  assert.equal(logic.DIRS.N.bit, 1);
+  assert.equal(logic.DIRS.E.bit, 2);
+  assert.equal(logic.DIRS.S.bit, 4);
+  assert.equal(logic.DIRS.W.bit, 8);
+});
+
+test('structure: default-size maze generates and solves with a sane path', () => {
+  const { generateMaze, solve } = loadLogic(HTML);
+  const m = generateMaze(25, 17, 42);
+  const path = solve(m, 0, m.w * m.h - 1);
+  assert.ok(path.length >= m.w + m.h - 1,
+    `solution length ${path.length} shorter than Manhattan minimum`);
+  assert.ok(path.length <= m.w * m.h, 'solution longer than the cell count');
+});
+
 // ---------- slice 2: movement and solving ----------
 
 test('canMove: edge cells are blocked outward', () => {
