@@ -13,7 +13,40 @@
 // shared global scope.
 (() => {
 
-globalThis.__logic = {};
+// Seeded 2D value noise: hashed lattice values, smoothstep-interpolated.
+// Returned function maps any (x, y) to [0, 1], fully determined by the seed.
+function makeNoise(seed) {
+  // 32-bit integer hash of a lattice point + seed -> [0, 1)
+  const hash = (ix, iy) => {
+    let h = (ix * 374761393 + iy * 668265263 + (seed | 0) * 2147483647) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    h ^= h >>> 16;
+    return (h >>> 0) / 4294967296;
+  };
+  const smooth = t => t * t * (3 - 2 * t);
+  return (x, y) => {
+    const ix = Math.floor(x), iy = Math.floor(y);
+    const fx = x - ix, fy = y - iy;
+    const ux = smooth(fx), uy = smooth(fy);
+    const a = hash(ix, iy),     b = hash(ix + 1, iy);
+    const c = hash(ix, iy + 1), d = hash(ix + 1, iy + 1);
+    return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
+  };
+}
+
+// Fractal sum of `noise`, normalized so the result stays in [0, 1].
+function fbm(noise, x, y, octaves) {
+  let sum = 0, amp = 1, norm = 0, f = 1;
+  for (let o = 0; o < octaves; o++) {
+    sum += noise(x * f, y * f) * amp;
+    norm += amp;
+    amp *= 0.5;
+    f *= 2;
+  }
+  return sum / norm;
+}
+
+globalThis.__logic = { makeNoise, fbm };
 })();
 </script>
 </body>
