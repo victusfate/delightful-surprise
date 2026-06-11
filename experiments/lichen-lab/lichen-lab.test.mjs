@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { loadLogic } from '../_harness/logic.mjs';
 
 const HTML = new URL('./index.html', import.meta.url).pathname;
@@ -155,4 +156,32 @@ test('ageTick: pure — does not mutate its inputs', () => {
   assert.deepEqual(ages, snapAges, 'ages input must not be mutated');
   assert.deepEqual(before, Uint8Array.from([0, 1]));
   assert.deepEqual(after, Uint8Array.from([1, 1]));
+});
+
+// ---------- slice 4 — structural acceptance ----------
+
+test('structure: logic block exports the full documented surface', () => {
+  const logic = loadLogic(HTML);
+  for (const fn of ['parseRule', 'step', 'countNeighbors', 'ageTick']) {
+    assert.equal(typeof logic[fn], 'function', `${fn} must be a function`);
+  }
+  assert.ok(Array.isArray(logic.PRESETS), 'PRESETS must be an array');
+});
+
+test('structure: logic IIFE leaks nothing but __logic', () => {
+  loadLogic(HTML);
+  for (const name of ['parseRule', 'step', 'countNeighbors', 'ageTick', 'PRESETS']) {
+    assert.equal(globalThis[name], undefined, `${name} must not leak into global scope`);
+  }
+});
+
+test('structure: app script consumes __logic and renders a dish', () => {
+  const html = readFileSync(HTML, 'utf8');
+  const appScript = html
+    .replace(/<script id="logic">[\s\S]*?<\/script>/, '')
+    .match(/<script>[\s\S]*?<\/script>/);
+  assert.ok(appScript, 'expected an app <script> besides the logic block');
+  assert.match(appScript[0], /globalThis\.__logic/, 'app must consume globalThis.__logic');
+  assert.match(html, /<canvas/, 'app must render to a canvas');
+  assert.match(html, /id="rule"/, 'app must have a rule input');
 });
