@@ -65,6 +65,74 @@ test('fbm: deterministic per seed', () => {
   }
 });
 
+// ---------- slice 2 — biome table & character ramps ----------
+
+const BIOME_IDS = ['deep-sea', 'sea', 'shore', 'plains', 'grass', 'forest', 'hills', 'mountains', 'snow'];
+
+test('BIOMES: nine biomes, each with id, name, ramp, color, suffixes', () => {
+  const { BIOMES } = loadLogic(HTML);
+  const hex = /^#[0-9a-f]{6}$/i;
+  for (const id of BIOME_IDS) {
+    const b = BIOMES[id];
+    assert.ok(b, `missing biome ${id}`);
+    assert.equal(b.id, id);
+    assert.ok(typeof b.name === 'string' && b.name.length > 0, `${id} needs a name`);
+    assert.ok(Array.isArray(b.chars) && b.chars.length >= 1, `${id} needs a char ramp`);
+    for (const ch of b.chars) assert.equal(typeof ch, 'string');
+    assert.match(b.color, hex, `${id} color must be #rrggbb`);
+    assert.ok(Array.isArray(b.suffixes) && b.suffixes.length >= 2, `${id} needs suffixes`);
+  }
+  assert.equal(Object.keys(BIOMES).length, BIOME_IDS.length, 'no extra biomes');
+});
+
+test('biomeFor: totally covers [0,1]^2 with valid biome ids', () => {
+  const { biomeFor, BIOMES } = loadLogic(HTML);
+  for (let h = 0; h <= 1.0001; h += 0.05) {
+    for (let m = 0; m <= 1.0001; m += 0.05) {
+      const id = biomeFor(Math.min(h, 1), Math.min(m, 1));
+      assert.ok(BIOMES[id], `biomeFor(${h.toFixed(2)},${m.toFixed(2)}) = ${id} is not a biome`);
+    }
+  }
+});
+
+test('biomeFor: deep sea at h=0, snow at h=1, for any moisture', () => {
+  const { biomeFor } = loadLogic(HTML);
+  for (const m of [0, 0.25, 0.5, 0.75, 1]) {
+    assert.equal(biomeFor(0, m), 'deep-sea');
+    assert.equal(biomeFor(1, m), 'snow');
+  }
+});
+
+test('biomeFor: moisture splits the mid band into plains/grass/forest', () => {
+  const { biomeFor } = loadLogic(HTML);
+  const seen = new Set();
+  for (let h = 0; h <= 1.0001; h += 0.02) {
+    for (const m of [0.05, 0.5, 0.95]) seen.add(biomeFor(Math.min(h, 1), m));
+  }
+  for (const id of BIOME_IDS) assert.ok(seen.has(id), `${id} unreachable in sweep`);
+});
+
+test('charFor: deterministic and always a member of the biome ramp', () => {
+  const { charFor, BIOMES } = loadLogic(HTML);
+  for (const id of BIOME_IDS) {
+    for (let h = 0; h <= 1.0001; h += 0.07) {
+      const hh = Math.min(h, 1);
+      const c = charFor(id, hh);
+      assert.equal(c, charFor(id, hh), `charFor(${id},${hh}) not deterministic`);
+      assert.ok(BIOMES[id].chars.includes(c), `charFor(${id},${hh}) = ${JSON.stringify(c)} not in ramp`);
+    }
+  }
+});
+
+test('charFor: low h picks the low end of the ramp, high h the high end', () => {
+  const { charFor, BIOMES } = loadLogic(HTML);
+  for (const id of BIOME_IDS) {
+    const ramp = BIOMES[id].chars;
+    assert.equal(charFor(id, 0), ramp[0], `${id} at h=0`);
+    assert.equal(charFor(id, 1), ramp[ramp.length - 1], `${id} at h=1`);
+  }
+});
+
 test('fbm: smooth — small step changes value by < 0.05', () => {
   const { makeNoise, fbm } = loadLogic(HTML);
   const noise = makeNoise(2026);
