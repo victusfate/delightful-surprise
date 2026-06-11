@@ -32,3 +32,38 @@ test('moonPhase: always in [0, 1), even before the anchor date', () => {
     assert.ok(p >= 0 && p < 1, `phase ${p} out of range for ${new Date(d).toISOString()}`);
   }
 });
+
+test('hexA converts hex + alpha to rgba()', () => {
+  const { hexA } = loadLogic(HTML);
+  assert.equal(hexA('#ff0080', 0.5), 'rgba(255,0,128,0.5)');
+  assert.equal(hexA('#000000', 1), 'rgba(0,0,0,1)');
+  assert.equal(hexA('#39e6c8', 0), 'rgba(57,230,200,0)');
+});
+
+test('clamp bounds values to [a, b]', () => {
+  const { clamp } = loadLogic(HTML);
+  assert.equal(clamp(5, 0, 10), 5);
+  assert.equal(clamp(-3, 0, 10), 0);
+  assert.equal(clamp(42, 0, 10), 10);
+});
+
+test('ease is a monotonic 0→1 ease-out', () => {
+  const { ease } = loadLogic(HTML);
+  assert.equal(ease(0), 0);
+  assert.equal(ease(1), 1);
+  let prev = -Infinity;
+  for (let t = 0; t <= 1.0001; t += 0.05) {
+    const v = ease(t);
+    assert.ok(v >= prev, `not monotonic at t=${t}`);
+    prev = v;
+  }
+  assert.ok(ease(0.5) > 0.5, 'ease-out should front-load progress');
+});
+
+test('pop ends at 1 and overshoots above 1 on the way (easeOutBack)', () => {
+  const { pop } = loadLogic(HTML);
+  assert.ok(Math.abs(pop(1) - 1) < 1e-9);
+  let overshoot = false;
+  for (let t = 0; t <= 1; t += 0.02) if (pop(t) > 1.0001) overshoot = true;
+  assert.ok(overshoot, 'expected overshoot above 1 somewhere in (0,1)');
+});
