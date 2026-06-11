@@ -105,6 +105,32 @@ test('alignment: steering matches the average heading direction', () => {
   assert.ok(dot(s, { x: 1, y: 0 }) > 0, 'must steer toward the average heading');
 });
 
+// ---------- slice 3 — threats ----------
+
+test('flee: exactly zero beyond the threat radius', () => {
+  const { flee } = loadLogic(HTML);
+  const b = boid(0, 0);
+  assert.deepEqual(flee(b, { x: 200, y: 0 }, 100), { x: 0, y: 0 });
+  assert.deepEqual(flee(b, { x: 100.001, y: 0 }, 100), { x: 0, y: 0 });
+});
+
+test('flee: nonzero and pointing away inside the radius', () => {
+  const { flee } = loadLogic(HTML);
+  const b = boid(0, 0);
+  const threat = { x: 30, y: 40 }; // distance 50, radius 100
+  const f = flee(b, threat, 100);
+  assert.ok(mag(f) > 0, 'must be nonzero inside the radius');
+  assert.ok(dot(f, { x: -30, y: -40 }) > 0, 'must point away from the threat');
+});
+
+test('flee: a closer threat produces a stronger flee', () => {
+  const { flee } = loadLogic(HTML);
+  const b = boid(0, 0);
+  const near = flee(b, { x: 10, y: 0 }, 100);
+  const far = flee(b, { x: 80, y: 0 }, 100);
+  assert.ok(mag(near) > mag(far), 'flee must strengthen as the threat closes');
+});
+
 test('the three rules all return {x:0, y:0} with no neighbors', () => {
   const { separation, alignment, cohesion } = loadLogic(HTML);
   const b = boid(7, 7, 1, 1);
