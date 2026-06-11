@@ -73,7 +73,90 @@ function flee(b, threat, radius) {
   return { x: dx * k, y: dy * k };
 }
 
-globalThis.__logic = { limit, clampSpeed, separation, alignment, cohesion, flee };
+// Default tuning, shared by the app and the unit tests. Units: px, px/s.
+const WEIGHTS = {
+  separation: 2600,
+  alignment: 1.6,
+  cohesion: 1.1,
+  seek: 130,
+  flee: 9000,
+  curiosity: 14,
+  wall: 320,
+  maxForce: 260,
+  minSpeed: 28,
+  maxSpeed: 130,
+  neighborRadius: 70,
+  fleeRadius: 150,
+  seekRadius: 220,
+  wallMargin: 70,
+};
+
+// One simulation tick. Pure: returns a new boid, never mutates the input.
+// env = { food: [{x,y}], predator: {x,y} | null, pointer?: {x,y}, bounds: {w,h} }.
+function stepBoid(b, neighbors, env, w, dt) {
+  const sep = separation(b, neighbors);
+  const ali = alignment(b, neighbors);
+  const coh = cohesion(b, neighbors);
+  let ax = sep.x * w.separation + ali.x * w.alignment + coh.x * w.cohesion;
+  let ay = sep.y * w.separation + ali.y * w.alignment + coh.y * w.cohesion;
+
+  // seek the nearest food mote within seekRadius
+  if (env.food && env.food.length) {
+    let best = null, bestD = w.seekRadius;
+    for (const f of env.food) {
+      const d = Math.hypot(f.x - b.x, f.y - b.y);
+      if (d < bestD) { bestD = d; best = f; }
+    }
+    if (best && bestD > 0) {
+      ax += ((best.x - b.x) / bestD) * w.seek;
+      ay += ((best.y - b.y) / bestD) * w.seek;
+    }
+  }
+
+  // gentle curiosity about the pointer
+  if (env.pointer) {
+    const dx = env.pointer.x - b.x, dy = env.pointer.y - b.y;
+    const d = Math.hypot(dx, dy);
+    if (d > 1) { ax += (dx / d) * w.curiosity; ay += (dy / d) * w.curiosity; }
+  }
+
+  // behavioral forces are capped; panic and walls are not
+  const acc = limit({ x: ax, y: ay }, w.maxForce);
+  ax = acc.x; ay = acc.y;
+
+  if (env.predator) {
+    const f = flee(b, env.predator, w.fleeRadius);
+    ax += f.x * w.flee;
+    ay += f.y * w.flee;
+  }
+
+  // soft wall repulsion, ramping up inside wallMargin
+  const m = w.wallMargin, bw = env.bounds.w, bh = env.bounds.h;
+  if (b.x < m) ax += w.wall * (1 - b.x / m);
+  if (b.x > bw - m) ax -= w.wall * (1 - (bw - b.x) / m);
+  if (b.y < m) ay += w.wall * (1 - b.y / m);
+  if (b.y > bh - m) ay -= w.wall * (1 - (bh - b.y) / m);
+
+  let v = clampSpeed({ x: b.vx + ax * dt, y: b.vy + ay * dt }, w.minSpeed, w.maxSpeed);
+  let x = b.x + v.x * dt, y = b.y + v.y * dt;
+
+  // hard backstop: the lagoon has glass — clamp and reflect, never escape
+  const inset = 2;
+  if (x < inset) { x = inset; v = { x: Math.abs(v.x), y: v.y }; }
+  if (x > bw - inset) { x = bw - inset; v = { x: -Math.abs(v.x), y: v.y }; }
+  if (y < inset) { y = inset; v = { x: v.x, y: Math.abs(v.y) }; }
+  if (y > bh - inset) { y = bh - inset; v = { x: v.x, y: -Math.abs(v.y) }; }
+
+  const speed = Math.hypot(v.x, v.y);
+  return {
+    x, y, vx: v.x, vy: v.y, hue: b.hue,
+    wiggle: b.wiggle + dt * (6 + speed * 0.09),
+  };
+}
+
+globalThis.__logic = {
+  limit, clampSpeed, separation, alignment, cohesion, flee, stepBoid, WEIGHTS,
+};
 })();
 </script>
 </body>
