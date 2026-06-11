@@ -56,6 +56,44 @@
   }
   #pick:hover { background: rgba(255,61,240,.25); }
 
+  #beatdot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-left: 8px; vertical-align: 1px; opacity: .25;
+    background: rgba(150,180,220,.5);
+  }
+  #beatdot.lock { background: var(--cyn); box-shadow: 0 0 10px var(--cyn), 0 0 22px var(--cyn); }
+  .shuf { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
+  #shuffle { accent-color: var(--cyn); }
+  #drawerbtn {
+    padding: 4px 10px; border-radius: 8px; cursor: pointer;
+    font: inherit; letter-spacing: inherit; color: #d8fbff;
+    background: rgba(47,240,255,.10); border: 1px solid var(--cyn);
+    text-shadow: 0 0 8px var(--cyn); box-shadow: 0 0 12px rgba(47,240,255,.25);
+  }
+  #drawerbtn:hover { background: rgba(47,240,255,.22); }
+  #drawer {
+    position: fixed; right: 16px; bottom: 66px; z-index: 2; width: 234px;
+    max-height: min(62vh, 540px); overflow-y: auto; display: none;
+    padding: 10px 14px 12px; border-radius: 12px;
+    font-family: ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
+    font-size: .72rem; letter-spacing: .06em; color: #bfeaff;
+    background: rgba(4,2,12,.88); border: 1px solid rgba(143,91,255,.45);
+    box-shadow: 0 0 24px rgba(143,91,255,.25); backdrop-filter: blur(8px);
+  }
+  #drawer.open { display: block; }
+  #drawer h3 {
+    margin: .7em 0 .25em; font-size: .64rem; font-weight: normal;
+    letter-spacing: .3em; text-transform: uppercase; color: var(--vio);
+    text-shadow: 0 0 8px rgba(143,91,255,.8);
+  }
+  #drawer h3:first-child { margin-top: 0; }
+  #drawer label {
+    display: flex; align-items: center; gap: 7px; padding: 1px 0;
+    cursor: pointer; white-space: nowrap;
+  }
+  #drawer input { accent-color: var(--mag); }
+  #drawer .hv { margin-left: auto; font-size: .58rem; color: rgba(255,61,240,.55); letter-spacing: .15em; }
+
   #hint {
     position: fixed; bottom: 16px; right: 18px; z-index: 2; pointer-events: none;
     font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .7rem;
@@ -81,22 +119,25 @@
 <div id="ui">
   <h1>beat-prism</h1>
   <p>drop a video — or click to hear the demo</p>
-  <p>beats are detected live; effects fire on every hit</p>
-  <p class="keys">space play/pause &nbsp; d demo &nbsp; 1–6 effects &nbsp; s save png</p>
+  <p>beats are predicted live; 46 effects fire with the music</p>
+  <p class="keys">space play/pause &nbsp; d demo &nbsp; e effects &nbsp; r shuffle &nbsp; s save png</p>
 </div>
 <div id="hud">
-  <span class="bpm-box">BPM <span id="bpm">—</span></span>
+  <span class="bpm-box">BPM <span id="bpm">—</span><span id="beatdot"></span></span>
   <label>sens <input id="sens" type="range" min="0" max="100" value="65"></label>
-  <span class="chip" data-fx="zoom">1 zoom</span>
-  <span class="chip" data-fx="flash">2 flash</span>
-  <span class="chip" data-fx="shake">3 shake</span>
-  <span class="chip" data-fx="particles">4 burst</span>
-  <span class="chip" data-fx="chroma">5 chroma</span>
-  <span class="chip" data-fx="glow">6 glow</span>
+  <span class="chip"></span>
+  <span class="chip"></span>
+  <span class="chip"></span>
+  <span class="chip"></span>
+  <span class="chip"></span>
+  <span class="chip"></span>
+  <label class="shuf"><input id="shuffle" type="checkbox" checked> shuffle</label>
+  <button id="drawerbtn">fx</button>
   <button id="pick">load video</button>
   <input id="file" type="file" accept="video/*" hidden>
 </div>
-<div id="hint">[space] play &nbsp; [d]emo &nbsp; [1-6] fx &nbsp; [s]ave</div>
+<div id="drawer"></div>
+<div id="hint">[space] play &nbsp; [d]emo &nbsp; [e]ffects &nbsp; [r] shuffle &nbsp; [s]ave</div>
 <div id="toast"></div>
 <div id="dropglow"></div>
 
@@ -399,27 +440,56 @@ globalThis.__logic = {
 </script>
 <script>
 'use strict';
-const { spectralFlux, bandEnergy, adaptiveThreshold, stepOnset, estimateBpm, decayPulse } =
-  globalThis.__logic;
+const { spectralFlux, bandEnergy, adaptiveThreshold, stepOnset, estimateBpm, decayPulse,
+        FX_REGISTRY, mulberry32, latencyMs, stepGrid, gridEvents, dealHand,
+        sliceOffsets, wedgeAngles, posterizeCurve, ringIndex } = globalThis.__logic;
 
 const TAU = Math.PI * 2;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const rand = (a, b) => a + Math.random() * (b - a);
 
-// ---------- canvas (main + offscreen source) ----------
+// ---------- canvas (main + reusable offscreen buffers) ----------
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
-const src = document.createElement('canvas');     // the "source frame": video or demo scene
-const sctx = src.getContext('2d');
+const mkCanvas = () => { const c = document.createElement('canvas'); return [c, c.getContext('2d')]; };
+const [src, sctx] = mkCanvas();      // the "source frame": video or demo scene
+const [fb, fbctx] = mkCanvas();      // echo-trails feedback
+const [sm, smctx] = mkCanvas();      // time-smear feedback
+const [gh, ghctx] = mkCanvas();      // motion-ghost snapshot
+const [dr, drctx] = mkCanvas();      // droste feedback
+const [pix, pixctx] = mkCanvas();    // pixelate downsample (sized on demand)
+let fbFresh = false, smFresh = false, ghFresh = false, drFresh = false, ghStamp = 0;
 let W = 0, H = 0;
+
+// static noise tile for grain-burst / vhs-band, rendered once
+const noiseCv = document.createElement('canvas');
+noiseCv.width = noiseCv.height = 128;
+{
+  const nctx = noiseCv.getContext('2d');
+  const img = nctx.createImageData(128, 128);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const v = (Math.random() * 255) | 0;
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+    img.data[i + 3] = 40 + Math.random() * 130;
+  }
+  nctx.putImageData(img, 0, 0);
+}
+// scanline tile (2×4: lower half dark), patterns built lazily once ctx exists
+const scanCv = document.createElement('canvas');
+scanCv.width = 2; scanCv.height = 4;
+scanCv.getContext('2d').fillStyle = 'rgba(0,0,0,.5)';
+scanCv.getContext('2d').fillRect(0, 2, 2, 2);
+let scanPat = null, grainPat = null;
 
 function resize() {
   W = window.innerWidth; H = window.innerHeight;
   canvas.width = W; canvas.height = H;
   src.width = W; src.height = H;
+  for (const c of [fb, sm, gh, dr]) { c.width = W; c.height = H; }
+  fbFresh = smFresh = ghFresh = drFresh = false;
+  ring = null; ringFill = 0;                  // sizes changed — drop the frame ring
 }
 window.addEventListener('resize', resize);
-resize();
 
 // ---------- state ----------
 const video = document.getElementById('v');
@@ -436,10 +506,42 @@ let onsetTimes = [];
 let bpm = null;
 let bassS = 0, trebleS = 0;   // smoothed band energies, 0..1
 
-const fx = { zoom: true, flash: true, shake: true, particles: true, chroma: true, glow: true };
-const FX_ORDER = ['zoom', 'flash', 'shake', 'particles', 'chroma', 'glow'];
-const pulses = { zoom: 0, flash: 0, shake: 0 };
-const HALF_LIFE = { zoom: 140, flash: 90, shake: 110 };
+// ---------- fx-pack state ----------
+const CATS = ['geometry', 'color', 'temporal', 'overlay', 'scene'];  // render order
+const FX_BY_ID = new Map(FX_REGISTRY.map(e => [e.id, e]));
+const enabled = Object.fromEntries(FX_REGISTRY.map(e => [e.id, true]));  // drawer pool
+const allIds = () => FX_REGISTRY.filter(e => enabled[e.id]).map(e => e.id);
+let shuffleOn = true;
+let hand = dealHand(FX_REGISTRY, 0, FX_REGISTRY.map(e => e.id));
+let activeSet = new Set(hand);
+const A = id => activeSet.has(id);
+
+const pulses = Object.fromEntries(
+  FX_REGISTRY.filter(e => e.kind === 'pulse').map(e => [e.id, 0]));
+const HALF_LIFE = {
+  zoom: 140, flash: 90, shake: 110,
+  'rotate-jolt': 160, 'spin-zoom': 230, squash: 150, 'skew-tilt': 150,
+  pixelate: 190, 'slice-glitch': 130, 'v-slice': 130,
+  'hue-spin': 220, 'sat-pump': 160, 'bleach-burn': 130, 'color-drain': 210,
+  'invert-strobe': 70, 'channel-swap': 150,
+  'strobe-black': 85, 'stutter-loop': 260,
+  'grain-burst': 110, 'vignette-pump': 190, starburst: 170, shockwave: 260,
+  burst: 120, confetti: 120, lightning: 100, 'glyph-pop': 120,
+};
+
+// beat grid + conductor
+let grid = null, prevFrameMs = 0, beatCount = 0, lastWindow = 0;
+let beatDot = 0, frameNo = 0;
+let hueBase = 0, sliceSeed = 1, joltDir = 1;
+let mirrorOn = false, tileN = 2, lbOpen = true, lbPos = 0, freezeUntil = 0;
+const beatPeriodMs = () => grid?.periodMs ?? (bpm ? 60000 / bpm : 500);
+const latMs = () => AC ? latencyMs(analyser.fftSize, AC.sampleRate) : latencyMs(2048, 44100);
+
+// frame ring — feeds freeze-frame and stutter-loop; allocated lazily,
+// released as soon as neither is enabled
+const RING_SIZE = 12;
+let ring = null, ringHead = -1, ringFill = 0;
+resize();   // deferred from the canvas section: resize() drops the ring
 
 // ---------- audio graph ----------
 function audioInit() {
@@ -554,6 +656,8 @@ function resetDetector() {
   onsetState = { history: [], lastOnsetMs: -Infinity };
   onsetTimes = [];
   bpm = null;
+  grid = null;          // new source, new tempo — drop the old beat grid
+  beatDot = 0;
   if (prevSpec) prevSpec.fill(0);
 }
 
@@ -578,24 +682,74 @@ function detect(nowMs) {
 }
 
 function onOnset(nowMs) {
-  pulses.zoom = pulses.flash = pulses.shake = 1;
-  if (fx.particles) burst();
   onsetTimes.push(nowMs);
   if (onsetTimes.length > 32) onsetTimes.shift();
   bpm = estimateBpm(onsetTimes);
+  const wasConfident = grid?.confident ?? false;
+  // detection time → audible time happens inside stepGrid via latencyMs
+  grid = stepGrid(grid, nowMs, bpm, nowMs, { latencyMs: latMs() });
+  // raw-onset fallback: until the grid is confident, beats fire on detection
+  if (!grid.confident && !wasConfident) fireBeat(nowMs);
 }
 
-// ---------- particles ----------
+// One beat of the show: pump every active pulse effect, spawn scene
+// elements, advance scheduled state on bars. Fired by gridEvents in the
+// frame a predicted beat elapses (confident grid) or by raw onsets.
+function fireBeat(nowMs) {
+  beatCount++;
+  beatDot = 1;
+  joltDir = -joltDir;
+  for (const id in pulses) if (A(id)) pulses[id] = 1;
+  if (A('hue-spin')) hueBase = (hueBase + 60) % 360;
+  if (A('slice-glitch') || A('v-slice')) sliceSeed = beatCount * 7349 + 13;
+  if (A('burst')) burst();
+  if (A('confetti')) confetti();
+  if (A('lightning')) spawnLightning();
+  if (A('glyph-pop')) spawnGlyphs();
+  if (beatCount % 4 === 0) fireBar(nowMs, beatCount >> 2);
+}
+
+// Bar boundary: scheduled effects toggle state; every 4 bars the
+// conductor deals a fresh hand (seed = the 4-bar window index).
+function fireBar(nowMs, bar) {
+  if (A('mirror-flip')) mirrorOn = !mirrorOn;
+  if (A('tile-grid')) tileN = tileN === 2 ? 3 : 2;
+  if (A('letterbox-snap')) lbOpen = !lbOpen;
+  if (A('freeze-frame') && bar % 2 === 0) freezeUntil = nowMs + beatPeriodMs();
+  const win = bar >> 2;
+  if (shuffleOn && win !== lastWindow) {
+    lastWindow = win;
+    hand = dealHand(FX_REGISTRY, win, allIds());
+    syncActive();
+  }
+}
+
+// ---------- scene elements (shared particle cap across burst + confetti) ----------
+const PARTICLE_CAP = 600;
 const particles = [];
 function burst() {
-  const n = Math.min(26, 400 - particles.length);
+  const n = Math.min(26, PARTICLE_CAP - particles.length);
   for (let i = 0; i < n; i++) {
     const a = rand(0, TAU), sp = rand(130, 430);
     particles.push({
+      kind: 'burst',
       x: W / 2 + Math.cos(a) * rand(0, 40), y: H / 2 + Math.sin(a) * rand(0, 40),
       vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
       life: rand(0.45, 1.1), age: 0, r: rand(1.2, 3),
       hue: [305, 185, 262][(Math.random() * 3) | 0] + rand(-14, 14),
+    });
+  }
+}
+function confetti() {
+  const n = Math.min(30, PARTICLE_CAP - particles.length);
+  for (let i = 0; i < n; i++) {
+    particles.push({
+      kind: 'confetti',
+      x: rand(0, W), y: -12 - rand(0, H * 0.15),
+      vx: rand(-50, 50), vy: rand(80, 240),
+      life: rand(1.2, 2.4), age: 0, r: rand(3, 6.5),
+      rot: rand(0, TAU), vr: rand(-7, 7),
+      hue: rand(0, 360),
     });
   }
 }
@@ -606,17 +760,97 @@ function drawParticles(dt) {
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
     p.age += dt;
-    if (p.age >= p.life || !fx.particles) { particles.splice(i, 1); continue; }
+    if (p.age >= p.life || !A(p.kind)) { particles.splice(i, 1); continue; }
     p.x += p.vx * dt; p.y += p.vy * dt;
-    p.vx *= 0.985; p.vy *= 0.985;
     const f = 1 - p.age / p.life;
-    ctx.globalAlpha = f * 0.9;
-    ctx.fillStyle = `hsl(${p.hue} 100% 65%)`;
-    ctx.shadowColor = ctx.fillStyle;
-    ctx.shadowBlur = 10;
-    ctx.beginPath(); ctx.arc(p.x, p.y, p.r * (0.5 + f), 0, TAU); ctx.fill();
+    if (p.kind === 'confetti') {
+      p.vy += 420 * dt;                 // gravity, no drag — paper flutter
+      p.vx += Math.sin((p.age + p.rot) * 9) * 26 * dt;
+      p.rot += p.vr * dt;
+      ctx.globalAlpha = Math.min(1, f * 1.6);
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = `hsl(${p.hue} 95% 62%)`;
+      ctx.save();
+      ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+      ctx.fillRect(-p.r, -p.r * 0.55, p.r * 2, p.r * 1.1);
+      ctx.restore();
+    } else {
+      p.vx *= 0.985; p.vy *= 0.985;
+      ctx.globalAlpha = f * 0.9;
+      ctx.fillStyle = `hsl(${p.hue} 100% 65%)`;
+      ctx.shadowColor = ctx.fillStyle;
+      ctx.shadowBlur = 10;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r * (0.5 + f), 0, TAU); ctx.fill();
+    }
   }
   ctx.restore();
+}
+
+const bolts = [];
+function spawnLightning() {
+  const segs = [];
+  let x = rand(W * 0.2, W * 0.8), y = -10;
+  const yEnd = H * rand(0.55, 0.95);
+  while (y < yEnd) {
+    const nx = x + rand(-70, 70), ny = y + rand(34, 90);
+    segs.push([x, y, nx, ny]);
+    if (Math.random() < 0.3) segs.push([nx, ny, nx + rand(-90, 90), ny + rand(20, 60)]); // fork
+    x = nx; y = ny;
+  }
+  bolts.push({ segs, life: 0.28, age: 0 });
+  if (bolts.length > 4) bolts.shift();
+}
+function drawBolts(dt) {
+  for (let i = bolts.length - 1; i >= 0; i--) {
+    const b = bolts[i];
+    b.age += dt;
+    if (b.age >= b.life) { bolts.splice(i, 1); continue; }
+    const f = 1 - b.age / b.life;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = f;
+    ctx.strokeStyle = '#eaf6ff';
+    ctx.shadowColor = '#8f5bff';
+    ctx.shadowBlur = 22;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    for (const [x1, y1, x2, y2] of b.segs) { ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+const glyphs = [], GLYPH_SET = '◆▲●✦✸✚♦◢';
+function spawnGlyphs() {
+  const n = 1 + ((Math.random() * 3) | 0);
+  for (let i = 0; i < n; i++) {
+    glyphs.push({
+      ch: GLYPH_SET[(Math.random() * GLYPH_SET.length) | 0],
+      x: rand(W * 0.15, W * 0.85), y: rand(H * 0.2, H * 0.8),
+      size: rand(42, 115), life: rand(0.4, 0.7), age: 0,
+      hue: [305, 185, 262][(Math.random() * 3) | 0],
+    });
+  }
+  if (glyphs.length > 14) glyphs.splice(0, glyphs.length - 14);
+}
+function drawGlyphs(dt) {
+  for (let i = glyphs.length - 1; i >= 0; i--) {
+    const g = glyphs[i];
+    g.age += dt;
+    if (g.age >= g.life) { glyphs.splice(i, 1); continue; }
+    const f = 1 - g.age / g.life, pop = 1.35 - f * 0.35;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = f;
+    ctx.fillStyle = `hsl(${g.hue} 100% 70%)`;
+    ctx.shadowColor = ctx.fillStyle;
+    ctx.shadowBlur = 24;
+    ctx.font = `${Math.round(g.size * pop)}px ui-monospace, Menlo, Consolas, monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(g.ch, g.x, g.y);
+    ctx.restore();
+  }
 }
 
 // ---------- source frame: video (letterboxed) or demo scene ----------
@@ -693,24 +927,120 @@ function drawDemoScene(t) {
   sctx.restore();
 }
 
-// ---------- composite ----------
-function render(t, dt) {
+// ---------- composite: geometry → color → temporal → overlay → scene ----------
+
+// Base draw: the source frame through the active geometry *replacement*
+// (kaleidoscope / tile-grid / slice strips), optionally pixelated first.
+// The caller has already set the transform and the color filter string.
+function drawBase(t) {
+  let view = src;
+  if (A('pixelate') && pulses['pixelate'] > 0.05) {
+    const block = 3 + pulses['pixelate'] * 26;
+    const pw = Math.max(8, Math.round(W / block)), ph = Math.max(8, Math.round(H / block));
+    if (pix.width !== pw || pix.height !== ph) { pix.width = pw; pix.height = ph; }
+    pixctx.imageSmoothingEnabled = true;        // clean downsample…
+    pixctx.clearRect(0, 0, pw, ph);
+    pixctx.drawImage(src, 0, 0, pw, ph);
+    view = pix;
+    ctx.imageSmoothingEnabled = false;          // …hard blocks on the way up
+  }
+  if (A('kaleidoscope')) {
+    const n = 8, wr = TAU / n, R = Math.hypot(W, H);
+    const wa = wedgeAngles(n), drift = t * 0.11;
+    for (let i = 0; i < n; i++) {
+      ctx.save();
+      ctx.translate(W / 2, H / 2);
+      ctx.rotate(wa[i] + drift);
+      if (i % 2) ctx.scale(1, -1);              // mirror every other wedge
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.arc(0, 0, R, -wr / 2 - 0.01, wr / 2 + 0.01);
+      ctx.closePath();
+      ctx.clip();
+      ctx.drawImage(view, -W / 2, -H / 2, W, H);
+      ctx.restore();
+    }
+  } else if (A('tile-grid')) {
+    for (let i = 0; i < tileN; i++) {
+      for (let j = 0; j < tileN; j++) {
+        ctx.drawImage(view, 0, 0, view.width, view.height,
+                      i * W / tileN, j * H / tileN, W / tileN, H / tileN);
+      }
+    }
+  } else if (A('slice-glitch') && pulses['slice-glitch'] > 0.04) {
+    const nS = 14, hS = Math.ceil(H / nS), sy = view.height / H;
+    const offs = sliceOffsets(sliceSeed, nS, 70 * pulses['slice-glitch']);
+    for (let i = 0; i < nS; i++) {              // horizontal strips, shoved sideways
+      ctx.drawImage(view, 0, i * hS * sy, view.width, hS * sy, offs[i], i * hS, W, hS);
+    }
+  } else if (A('v-slice') && pulses['v-slice'] > 0.04) {
+    const nS = 14, wS = Math.ceil(W / nS), sx = view.width / W;
+    const offs = sliceOffsets(sliceSeed + 1, nS, 70 * pulses['v-slice']);
+    for (let i = 0; i < nS; i++) {              // vertical strips, shoved up/down
+      ctx.drawImage(view, i * wS * sx, 0, wS * sx, view.height, i * wS, offs[i], wS, H);
+    }
+  } else {
+    ctx.drawImage(view, 0, 0, W, H);
+  }
+  ctx.imageSmoothingEnabled = true;
+}
+
+function render(t, dt, nowMs) {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, W, H);
+  const m = Math.min(W, H);
+  const P = id => pulses[id] ?? 0;
+  const onCenter = fn => {
+    ctx.translate(W / 2, H / 2); fn(); ctx.translate(-W / 2, -H / 2);
+  };
 
+  // ════ geometry: composed transforms, then the base draw ════
   ctx.save();
-  if (fx.shake && pulses.shake > 0.02) {
-    const a = rand(0, TAU), d = pulses.shake * 13;
+  if (A('shake') && P('shake') > 0.02) {
+    const a = rand(0, TAU), d = P('shake') * 13;
     ctx.translate(Math.cos(a) * d, Math.sin(a) * d);
   }
-  if (fx.zoom && pulses.zoom > 0.02) {
-    const z = 1 + pulses.zoom * 0.07;
-    ctx.translate(W / 2, H / 2); ctx.scale(z, z); ctx.translate(-W / 2, -H / 2);
+  if (A('zoom') && P('zoom') > 0.02) {
+    const z = 1 + P('zoom') * 0.07;
+    onCenter(() => ctx.scale(z, z));
   }
-  ctx.drawImage(src, 0, 0);
+  if (A('rotate-jolt') && P('rotate-jolt') > 0.02) {
+    onCenter(() => ctx.rotate(joltDir * P('rotate-jolt') * 0.12));
+  }
+  if (A('spin-zoom') && P('spin-zoom') > 0.02) {
+    const z = 1 + P('spin-zoom') * 0.4;
+    onCenter(() => { ctx.rotate(P('spin-zoom') * 0.55); ctx.scale(z, z); });
+  }
+  if (A('squash') && P('squash') > 0.02) {
+    onCenter(() => ctx.scale(1 + P('squash') * 0.2, 1 - P('squash') * 0.24));
+  }
+  if (A('skew-tilt') && P('skew-tilt') > 0.02) {
+    onCenter(() => ctx.transform(1, joltDir * P('skew-tilt') * 0.14,
+                                 joltDir * P('skew-tilt') * 0.3, 1, 0, 0));
+  }
+  if (A('mirror-flip') && mirrorOn) { ctx.translate(W, 0); ctx.scale(-1, 1); }
 
-  // chromatic aberration follows the bass
-  const am = fx.chroma ? bassS * 30 : 0;
+  // ════ color: light effects ride the base draw as one filter stack ════
+  const filt = [];
+  if (A('hue-spin')) filt.push(`hue-rotate(${(hueBase + P('hue-spin') * 45).toFixed(1)}deg)`);
+  if (A('sat-pump')) filt.push(`saturate(${(1 + P('sat-pump') * 2.6).toFixed(3)})`);
+  if (A('bleach-burn')) {
+    filt.push(`brightness(${(1 + P('bleach-burn') * 1.5).toFixed(3)}) saturate(${(1 - P('bleach-burn') * 0.75).toFixed(3)})`);
+  }
+  if (A('gamma-flicker')) {
+    filt.push(`brightness(${(0.72 + trebleS * 1.8 + 0.18 * Math.sin(t * 39)).toFixed(3)})`);
+  }
+  if (A('color-drain')) filt.push(`grayscale(${P('color-drain').toFixed(3)})`);
+  if (A('posterize')) {
+    filt.push(`saturate(1.5) contrast(${(2.2 + posterizeCurve(bassS, 4) * 3).toFixed(3)}) brightness(1.1)`);
+  }
+  if (A('invert-strobe') && P('invert-strobe') > 0.5) filt.push('invert(1)');
+  ctx.filter = filt.length ? filt.join(' ') : 'none';
+  drawBase(t);
+  ctx.filter = 'none';
+
+  // chromatic aberration follows the bass (original look, original place)
+  const am = A('chroma') ? bassS * 30 : 0;
   if (am > 0.6) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
@@ -723,19 +1053,157 @@ function render(t, dt) {
   }
   ctx.restore();
 
-  if (fx.flash && pulses.flash > 0.02) {
+  // heavy color passes — filtered self-draws, so they respect geometry
+  if (A('sepia-ghost')) {
+    ctx.save();
+    ctx.filter = 'sepia(0.9) brightness(1.05)';
+    ctx.drawImage(canvas, 0, 0);
+    ctx.filter = 'sepia(0.9)';
+    ctx.globalAlpha = 0.28;
+    ctx.drawImage(canvas, 9, 0);                // the trailing ghost
+    ctx.restore();
+  }
+  if (A('duotone')) {
+    ctx.save();
+    ctx.filter = 'grayscale(1) contrast(1.15)';
+    ctx.drawImage(canvas, 0, 0);
+    ctx.filter = 'none';
+    ctx.globalCompositeOperation = 'multiply';  // shadows → magenta
+    ctx.fillStyle = '#ff3df0';
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'lighter';   // lift blacks toward deep cyan
+    ctx.globalAlpha = 0.2;
+    ctx.fillStyle = '#062330';
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+  if (A('thermal')) {
+    ctx.save();                                 // luminance → fire palette
+    ctx.filter = 'grayscale(1) sepia(1) saturate(9) hue-rotate(-35deg) contrast(1.7) brightness(1.2)';
+    ctx.drawImage(canvas, 0, 0);
+    ctx.restore();
+  }
+  if (A('channel-swap') && P('channel-swap') > 0.04) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, P('channel-swap') * 1.2);
+    ctx.filter = 'hue-rotate(135deg) saturate(1.3)';
+    ctx.drawImage(canvas, 0, 0);
+    ctx.restore();
+  }
+  if (A('neon-edge')) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'difference';  // flat areas cancel, edges remain
+    ctx.drawImage(canvas, 2, 1);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.filter = 'brightness(2.2) saturate(2.6)';
+    ctx.drawImage(canvas, 0, 0);
+    ctx.drawImage(canvas, 0, 0);
+    ctx.restore();
+  }
+  if (A('flash') && P('flash') > 0.02) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = pulses.flash * 0.38;
+    ctx.globalAlpha = P('flash') * 0.38;
     ctx.fillStyle = '#cfe9ff';
     ctx.fillRect(0, 0, W, H);
     ctx.restore();
   }
 
-  drawParticles(dt);
+  // ════ temporal: feedback buffers, strobes, and the frame ring ════
+  if (A('echo-trails')) {
+    if (fbFresh) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.42;
+      ctx.drawImage(fb, -10, -10, W + 20, H + 20);  // slight outward zoom
+      ctx.restore();
+    }
+    fbctx.clearRect(0, 0, W, H);
+    fbctx.drawImage(canvas, 0, 0);
+    fbFresh = true;
+  } else fbFresh = false;
+  if (A('time-smear')) {
+    if (smFresh) {
+      ctx.save();
+      ctx.globalAlpha = 0.55;
+      ctx.filter = 'blur(4px)';
+      ctx.drawImage(sm, 0, 0);
+      ctx.restore();
+    }
+    smctx.clearRect(0, 0, W, H);
+    smctx.drawImage(canvas, 0, 0);
+    smFresh = true;
+  } else smFresh = false;
+  if (A('motion-ghost')) {
+    if (ghFresh) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.32;
+      ctx.drawImage(gh, Math.sin(t * 2.3) * 10, 0);  // a stale double, drifting
+      ctx.restore();
+    }
+    if (nowMs - ghStamp > 120) {
+      ghctx.clearRect(0, 0, W, H);
+      ghctx.drawImage(canvas, 0, 0);
+      ghStamp = nowMs;
+      ghFresh = true;
+    }
+  } else ghFresh = false;
+  if (A('droste')) {
+    if (drFresh) {
+      const s = 0.62;
+      ctx.save();
+      ctx.globalAlpha = 0.92;                   // last frame nested in — recursion emerges
+      ctx.drawImage(dr, W * (1 - s) / 2, H * (1 - s) / 2, W * s, H * s);
+      ctx.restore();
+    }
+    drctx.clearRect(0, 0, W, H);
+    drctx.drawImage(canvas, 0, 0);
+    drFresh = true;
+  } else drFresh = false;
+  if (A('interlace-roll')) {
+    const bh = 8, roll = (t * 90) % (bh * 2), j = 5 + Math.sin(t * 3.1) * 4;
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    for (let y = roll; y < H; y += bh * 2) {    // every other band, torn sideways
+      ctx.drawImage(canvas, 0, y, W, bh, j, y, W, bh);
+    }
+    ctx.restore();
+  }
+  if (A('strobe-black') && P('strobe-black') > 0.25 && frameNo % 2 === 0) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, P('strobe-black') * 1.5);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+  // frame ring — lazy while freeze-frame / stutter-loop live, freed after
+  if (A('freeze-frame') || A('stutter-loop')) {
+    if (!ring) { ring = new Array(RING_SIZE).fill(null); ringHead = -1; ringFill = 0; }
+    const frozen = nowMs < freezeUntil && A('freeze-frame');
+    if (!frozen) {                              // capture pauses while frozen
+      ringHead = (ringHead + 1) % RING_SIZE;
+      const slot = ring[ringHead] ?? (ring[ringHead] = document.createElement('canvas'));
+      if (slot.width !== W || slot.height !== H) { slot.width = W; slot.height = H; }
+      slot.getContext('2d').drawImage(canvas, 0, 0);
+      ringFill = Math.min(RING_SIZE, ringFill + 1);
+    }
+    if (frozen && ring[ringHead]) {
+      ctx.drawImage(ring[ringHead], 0, 0);      // hold the bar-start frame
+    } else if (A('stutter-loop') && P('stutter-loop') > 0.2 && ringFill >= 6) {
+      const back = 1 + ((nowMs / 50) | 0) % 5;
+      const slot = ring[ringIndex(ringHead, back, RING_SIZE)];
+      if (slot) {
+        ctx.save();
+        ctx.globalAlpha = 0.9;
+        ctx.drawImage(slot, 0, 0);              // replay recent frames, jumpily
+        ctx.restore();
+      }
+    }
+  } else if (ring) { ring = null; ringFill = 0; }
 
-  // edge glow follows the treble
-  if (fx.glow && trebleS > 0.015) {
+  // ════ overlay ════
+  if (A('glow') && trebleS > 0.015) {           // edge glow follows the treble
     ctx.save();
     const hue = (t * 50) % 360;
     ctx.globalAlpha = clamp(trebleS * 2.2, 0, 1);
@@ -746,27 +1214,185 @@ function render(t, dt) {
     ctx.strokeRect(4, 4, W - 8, H - 8);
     ctx.restore();
   }
+  if (A('scanlines')) {
+    scanPat ??= ctx.createPattern(scanCv, 'repeat');
+    ctx.save();
+    ctx.globalAlpha = 0.75;
+    ctx.fillStyle = scanPat;
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+  if (A('vhs-band')) {
+    const y = ((t * 140) % (H + 120)) - 60, bh = 26;
+    ctx.save();
+    if (y > 0 && y + bh < H) ctx.drawImage(canvas, 0, y, W, bh, rand(-9, 9), y, W, bh);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.1;
+    ctx.fillStyle = '#cfeaff';
+    ctx.fillRect(0, y, W, bh);
+    ctx.globalAlpha = 0.2;
+    ctx.drawImage(noiseCv, 0, (t * 700) % 100, 128, 20, 0, y + 3, W, bh - 6);
+    ctx.restore();
+  }
+  if (A('grain-burst') && P('grain-burst') > 0.03) {
+    grainPat ??= ctx.createPattern(noiseCv, 'repeat');
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = P('grain-burst') * 0.5;
+    ctx.translate(-rand(0, 128), -rand(0, 128));
+    ctx.fillStyle = grainPat;
+    ctx.fillRect(0, 0, W + 128, H + 128);
+    ctx.restore();
+  }
+  if (A('vignette-pump')) {
+    const p = P('vignette-pump');
+    const g = ctx.createRadialGradient(W / 2, H / 2, Math.max(1, m * (0.62 - p * 0.25)),
+                                       W / 2, H / 2, m * 0.95);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(1, `rgba(0,0,0,${(0.55 + p * 0.4).toFixed(3)})`);
+    ctx.save();
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+  if (A('letterbox-snap') || lbPos > 0.003) {
+    const target = A('letterbox-snap') && lbOpen ? 1 : 0;
+    lbPos += (target - lbPos) * Math.min(1, dt * 14);
+    const bh = H * 0.13 * lbPos;
+    if (bh > 0.5) {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, W, bh);
+      ctx.fillRect(0, H - bh, W, bh);
+    }
+  }
+  if (A('starburst') && P('starburst') > 0.03) {
+    const p = P('starburst');
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = p;
+    ctx.strokeStyle = '#fff';
+    ctx.shadowColor = '#9ff0ff';
+    ctx.shadowBlur = 18;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    for (const a0 of wedgeAngles(12)) {
+      const a = a0 + t * 0.35;
+      ctx.moveTo(W / 2 + Math.cos(a) * m * 0.05, H / 2 + Math.sin(a) * m * 0.05);
+      ctx.lineTo(W / 2 + Math.cos(a) * m * (0.08 + p * 0.55),
+                 H / 2 + Math.sin(a) * m * (0.08 + p * 0.55));
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+  if (A('shockwave') && P('shockwave') > 0.03) {
+    const p = P('shockwave');
+    ctx.save();
+    ctx.globalAlpha = p;
+    ctx.strokeStyle = 'rgba(150,240,255,.9)';
+    ctx.shadowColor = '#2ff0ff';
+    ctx.shadowBlur = 24;
+    ctx.lineWidth = 2 + p * 13;
+    ctx.beginPath();
+    ctx.arc(W / 2, H / 2, m * 0.04 + (1 - p) * m * 0.65, 0, TAU);  // expands as it fades
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // ════ scene ════
+  drawParticles(dt);
+  drawBolts(dt);
+  drawGlyphs(dt);
 
   for (const key of Object.keys(pulses)) {
-    pulses[key] = decayPulse(pulses[key], dt * 1000, HALF_LIFE[key]);
+    pulses[key] = decayPulse(pulses[key], dt * 1000, HALF_LIFE[key] ?? 150);
   }
 }
 
-// ---------- HUD ----------
+// ---------- HUD: hand chips, drawer, shuffle ----------
 const bpmEl = document.getElementById('bpm');
+const dotEl = document.getElementById('beatdot');
+const shuffleEl = document.getElementById('shuffle');
+const drawerEl = document.getElementById('drawer');
 const chips = [...document.querySelectorAll('.chip')];
-function syncChips() {
-  for (const c of chips) c.classList.toggle('on', fx[c.dataset.fx]);
+const drawerBoxes = [];
+
+// The drawer lists all 46 effects, one checkbox per registry entry,
+// grouped by category in render order. Checkboxes are the shuffle pool;
+// touching one is a manual change and switches shuffle off.
+for (const cat of CATS) {
+  const h = document.createElement('h3');
+  h.textContent = cat;
+  drawerEl.appendChild(h);
+  for (const e of FX_REGISTRY.filter(x => x.cat === cat)) {
+    const row = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.dataset.fx = e.id;
+    cb.checked = enabled[e.id];
+    cb.addEventListener('change', () => {
+      enabled[e.id] = cb.checked;
+      manualChange(`${e.name} ${cb.checked ? 'on' : 'off'}`);
+    });
+    row.appendChild(cb);
+    row.appendChild(document.createTextNode(' ' + e.name));
+    if (e.heavy) {
+      const hv = document.createElement('span');
+      hv.className = 'hv';
+      hv.textContent = 'heavy';
+      row.appendChild(hv);
+    }
+    drawerEl.appendChild(row);
+    drawerBoxes.push(cb);
+  }
 }
-function toggleFx(name) {
-  fx[name] = !fx[name];
-  syncChips();
-  toast(`${name} ${fx[name] ? 'on' : 'off'}`);
+
+// activeSet: the hand while shuffle conducts, the enabled pool when manual.
+function syncActive() {
+  activeSet = shuffleOn ? new Set(hand) : new Set(allIds());
+  const ids = [...activeSet].slice(0, 6);
+  chips.forEach((c, i) => {
+    const id = ids[i];
+    c.textContent = id ? FX_BY_ID.get(id).name : '';
+    c.dataset.fx = id ?? '';
+    c.style.display = id ? '' : 'none';
+    c.classList.toggle('on', !!id);
+  });
+  shuffleEl.checked = shuffleOn;
+  for (const cb of drawerBoxes) cb.checked = enabled[cb.dataset.fx];
 }
+function manualChange(msg) {
+  shuffleOn = false;
+  syncActive();
+  if (msg) toast(msg);
+}
+function enableShuffle() {
+  shuffleOn = true;
+  lastWindow = beatCount >> 4;
+  hand = dealHand(FX_REGISTRY, lastWindow, allIds());
+  syncActive();
+  toast('shuffle on');
+}
+// clicking a hand chip pins the rest and drops that one effect
 for (const c of chips) {
-  c.addEventListener('click', e => { e.stopPropagation(); toggleFx(c.dataset.fx); });
+  c.addEventListener('click', e => {
+    e.stopPropagation();
+    const id = c.dataset.fx;
+    if (!id) return;
+    const keep = new Set(activeSet);
+    keep.delete(id);
+    for (const f of FX_REGISTRY) enabled[f.id] = keep.has(f.id);
+    manualChange(`${FX_BY_ID.get(id).name} off`);
+  });
 }
-syncChips();
+shuffleEl.addEventListener('change', () => {
+  if (shuffleEl.checked) enableShuffle();
+  else manualChange('shuffle off — drawer picks play');
+});
+document.getElementById('drawerbtn').addEventListener('click', e => {
+  e.stopPropagation();
+  drawerEl.classList.toggle('open');
+});
+syncActive();
 
 const toastEl = document.getElementById('toast');
 let toastTimer = null;
@@ -823,8 +1449,16 @@ window.addEventListener('keydown', e => {
     a.href = canvas.toDataURL('image/png');
     a.click();
     toast('frame saved');
-  } else if (e.key >= '1' && e.key <= '6') {
-    toggleFx(FX_ORDER[e.key - 1]);
+  } else if (e.key === 'r') {
+    enableShuffle();
+  } else if (e.key === 'e') {
+    drawerEl.classList.toggle('open');
+  } else if (e.key === '0') {
+    for (const id in enabled) enabled[id] = false;
+    manualChange('all effects off');
+  } else if (e.key === '9') {
+    for (const id in enabled) enabled[id] = true;
+    manualChange('all effects on');
   }
 });
 
@@ -833,10 +1467,21 @@ let last = 0;
 function frame(ms) {
   const dt = Math.min(0.05, (ms - last) / 1000 || 0.016);
   last = ms;
+  frameNo++;
   if (AC && analyser) detect(ms);
+  if (grid) {
+    grid = stepGrid(grid, null, bpm, ms);   // free-run / confidence-lapse tick
+    // while confident, pulses fire in the frame a predicted beat elapses —
+    // with the audible beat (latency-compensated), not after detection
+    for (const ev of gridEvents(grid, prevFrameMs, ms)) fireBeat(ev.timeMs);
+  }
+  prevFrameMs = ms;
   drawSource(ms / 1000);
-  render(ms / 1000, dt);
+  render(ms / 1000, dt, ms);
   bpmEl.textContent = bpm === null ? '—' : Math.round(bpm);
+  beatDot = decayPulse(beatDot, dt * 1000, 90);
+  dotEl.classList.toggle('lock', !!grid?.confident);
+  dotEl.style.opacity = grid?.confident ? 0.35 + 0.65 * beatDot : 0.25;
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
