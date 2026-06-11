@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { loadLogic } from '../_harness/logic.mjs';
 
 const HTML = new URL('./index.html', import.meta.url).pathname;
@@ -176,4 +177,23 @@ test('curl: matches the perpendicular gradient (dn/dy, -dn/dx)', () => {
   const v = curl(n, 2, 3, 0.001);
   assert.ok(Math.abs(v.vx - 2) < 1e-6, `vx ${v.vx} != 2`);
   assert.ok(Math.abs(v.vy + 3) < 1e-6, `vy ${v.vy} != -3`);
+});
+
+// ---------- slice 4: structural acceptance ----------
+
+test('structure: logic block exports the full documented surface', () => {
+  const logic = loadLogic(HTML);
+  for (const fn of ['makeNoise', 'fbm', 'curl', 'stepParticle']) {
+    assert.equal(typeof logic[fn], 'function', `${fn} must be a function`);
+  }
+  assert.ok(Array.isArray(logic.PALETTES), 'PALETTES must be an array');
+});
+
+test('structure: app is wired — canvas, swatches, and logic consumption', () => {
+  const html = readFileSync(HTML, 'utf8');
+  assert.match(html, /<canvas/, 'app must render to a canvas');
+  assert.match(html, /id="swatches"/, 'app must have a swatch row');
+  const appScripts = (html.match(/<script>[\s\S]*?<\/script>/g) ?? []);
+  assert.equal(appScripts.length, 1, 'expected exactly one app <script> block');
+  assert.match(appScripts[0], /globalThis\.__logic/, 'app script must consume globalThis.__logic');
 });
