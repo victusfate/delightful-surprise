@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>euclid beats — a drum loom</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #020111; }
+  canvas { display: block; cursor: pointer; }
+  #brand {
+    position: fixed; top: 18px; left: 0; right: 0; text-align: center; pointer-events: none;
+    font-family: Georgia, 'Times New Roman', serif; color: #cfd8ff;
+    text-shadow: 0 0 18px rgba(120,160,255,.45);
+  }
+  #brand h1 { font-size: 1.5rem; font-weight: normal; letter-spacing: .4em; margin: 0; opacity: .9; }
+  #brand p { font-size: .8rem; letter-spacing: .14em; opacity: .55; margin: .3rem 0 0; }
+  #intro {
+    position: fixed; inset: 0; pointer-events: none; z-index: 3;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font-family: Georgia, serif; color: #cfd8ff; text-align: center;
+    text-shadow: 0 0 18px rgba(120,160,255,.5); transition: opacity 1.8s ease;
+  }
+  #intro h2 { font-size: 2.2rem; font-weight: normal; letter-spacing: .3em; margin: 0 0 .7rem; opacity: .95; }
+  #intro p { font-size: .95rem; letter-spacing: .12em; opacity: .65; margin: .25rem 0; }
+  #intro.hidden { opacity: 0; }
+  #controls {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 4;
+    display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+    gap: 8px; padding: 12px 16px 14px;
+    font-family: Georgia, serif;
+    background: linear-gradient(to top, rgba(4,6,20,.85), rgba(4,6,20,0));
+  }
+  .chip {
+    font-family: Georgia, serif; font-size: .85rem; letter-spacing: .08em;
+    color: #cfd8ff; background: rgba(20,26,58,.55);
+    border: 1px solid rgba(150,170,255,.28); border-radius: 999px;
+    padding: 5px 14px; cursor: pointer; transition: all .25s ease;
+    text-shadow: 0 0 10px rgba(120,160,255,.35);
+  }
+  .chip:hover { border-color: rgba(190,205,255,.7); background: rgba(40,50,100,.6); }
+  .chip.active { border-color: rgba(255,219,112,.8); background: rgba(255,210,63,.13); color: #ffe9a8; }
+  #dice { font-size: 1rem; padding: 5px 15px; border-color: rgba(255,219,112,.45); color: #ffe9a8; }
+  #play { width: 64px; text-align: center; }
+  #tempoWrap { display: flex; align-items: center; gap: 8px; color: #9fb0e8; font-size: .85rem; letter-spacing: .08em; }
+  #tempo { width: 130px; accent-color: #7e9bff; cursor: pointer; }
+  #bpmLabel { min-width: 64px; }
+  #hint {
+    position: fixed; top: 14px; right: 18px; pointer-events: none; text-align: right;
+    font-family: Georgia, serif; font-size: .74rem; letter-spacing: .08em;
+    color: rgba(180,195,255,.45); line-height: 1.7;
+  }
+  #toast {
+    position: fixed; top: 86px; left: 50%; transform: translateX(-50%); z-index: 5;
+    pointer-events: none; font-family: Georgia, serif; font-size: .92rem;
+    letter-spacing: .12em; color: rgba(255,233,168,.95); max-width: 80vw; text-align: center;
+    text-shadow: 0 0 16px rgba(255,210,100,.5); opacity: 0; transition: opacity .6s ease;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="brand"><h1>euclid beats</h1><p>a drum loom — one ancient rule, endless groove</p></div>
+<div id="intro">
+  <h2>euclid beats</h2>
+  <p>k hits, spread as evenly as possible over n steps</p>
+  <p>— that single rule makes the world dance —</p>
+  <p style="margin-top:1rem; opacity:.8">click anywhere to start the loom</p>
+</div>
+<div id="hint">click a ring · +hit<br>right-click · −hit<br>[space] play&nbsp; [m]ute&nbsp; [?] reroll</div>
+<div id="toast"></div>
+<div id="controls">
+  <button class="chip" id="play">play</button>
+  <span id="chips"></span>
+  <button class="chip" id="dice" title="roll the dice — it almost always grooves">?</button>
+  <span id="tempoWrap">
+    <input type="range" id="tempo" min="60" max="180" value="120" step="1">
+    <span id="bpmLabel">120 bpm</span>
+  </span>
+</div>
+
+<script id="logic">
+'use strict';
+// Pure, DOM-free rhythm math — extracted and unit-tested in Node via
+// experiments/_harness/logic.mjs (see docs/euclid-beats/plan.md).
+// IIFE so only __logic reaches the shared global scope.
+(() => {
+
+// Bjorklund / Toussaint: distribute k hits as evenly as possible across
+// n steps. Pairs the long and short runs until one remainder is left.
+function euclid(k, n) {
+  if (n <= 0) return [];
+  if (k <= 0) return new Array(n).fill(false);
+  if (k >= n) return new Array(n).fill(true);
+  let a = Array.from({ length: k }, () => [true]);
+  let b = Array.from({ length: n - k }, () => [false]);
+  while (b.length > 1) {
+    const m = Math.min(a.length, b.length);
+    const merged = [];
+    for (let i = 0; i < m; i++) merged.push(a[i].concat(b[i]));
+    const rest = a.length > m ? a.slice(m) : b.slice(m);
+    a = merged;
+    b = rest;
+  }
+  return a.flat().concat(b.flat());
+}
+
+const patternString = pattern => pattern.map(v => (v ? 'x' : '.')).join('');
+
+// Circular right-rotation by r steps (negative r rotates left).
+function rotate(pattern, r) {
+  const n = pattern.length;
+  if (n === 0) return [];
+  const s = ((r % n) + n) % n;
+  return pattern.map((_, i) => pattern[(i - s + n) % n]);
+}
+
+// Absolute hit times for one bar starting at t0.
+function scheduleTimes(pattern, stepDur, t0) {
+  const times = [];
+  pattern.forEach((hit, i) => { if (hit) times.push(t0 + i * stepDur); });
+  return times;
+}
+
+// World rhythms. rings order = [kick, snare, hat, bell]; rot rotates the
+// Euclidean pattern to taste (e.g. snare backbeats). Headline (k, n) is the
+// named pattern and always lands on one of the rings.
+const PRESETS = [
+  { name: 'Tresillo',  k: 3, n: 8,
+    rings: [{ k: 3, n: 8 }, { k: 2, n: 8, rot: 2 }, { k: 8, n: 8 }, { k: 2, n: 8, rot: 3 }] },
+  { name: 'Cinquillo', k: 5, n: 8,
+    rings: [{ k: 2, n: 8 }, { k: 1, n: 8, rot: 4 }, { k: 4, n: 8, rot: 1 }, { k: 5, n: 8 }] },
+  { name: 'Khafif',    k: 2, n: 5,
+    rings: [{ k: 2, n: 5 }, { k: 1, n: 5, rot: 2 }, { k: 5, n: 5 }, { k: 1, n: 5, rot: 4 }] },
+  { name: 'Money',     k: 3, n: 7,
+    rings: [{ k: 3, n: 7 }, { k: 1, n: 7, rot: 3 }, { k: 7, n: 7 }, { k: 2, n: 7, rot: 5 }] },
+  { name: 'Samba',     k: 7, n: 16,
+    rings: [{ k: 4, n: 16 }, { k: 2, n: 16, rot: 4 }, { k: 8, n: 16 }, { k: 7, n: 16 }] },
+  { name: 'Bossa',     k: 5, n: 16,
+    rings: [{ k: 4, n: 16 }, { k: 2, n: 16, rot: 4 }, { k: 8, n: 16 }, { k: 5, n: 16 }] },
+];
+
+// Dice roll: random (k, n) per ring inside taste bounds — kick stays
+// sparse, hat stays busy — so the result almost always grooves.
+function rollRings(rng) {
+  const ri = (a, b) => a + Math.floor(rng() * (b - a + 1));
+  const kickN = ri(4, 16);
+  const snareN = ri(4, 16);
+  const hatN = ri(4, 16);
+  const bellN = ri(4, 16);
+  return [
+    { k: ri(1, Math.max(1, Math.round(kickN / 4))), n: kickN },
+    { k: ri(1, Math.max(1, Math.round(snareN / 3))), n: snareN },
+    { k: ri(Math.ceil(hatN / 2), hatN), n: hatN },
+    { k: ri(1, Math.max(2, Math.round(bellN / 2))), n: bellN },
+  ];
+}
+
+globalThis.__logic = { euclid, patternString, rotate, scheduleTimes, PRESETS, rollRings };
+})();
+</script>
+<script>
+'use strict';
+const { euclid, patternString, rotate, scheduleTimes, PRESETS, rollRings } = globalThis.__logic;
+
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+// ---------- voices (visual identity; synth defs below) ----------
+const VOICES = [
+  { name: 'kick',  color: '#ff8a5c', glow: 'rgba(255,138,92,',  rf: 0.40 },
+  { name: 'snare', color: '#e96bff', glow: 'rgba(233,107,255,', rf: 0.60 },
+  { name: 'hat',   color: '#3fd0ff', glow: 'rgba(63,208,255,',  rf: 0.80 },
+  { name: 'bell',  color: '#ffd23f', glow: 'rgba(255,210,63,',  rf: 1.00 },
+];
+
+// ---------- ring state ----------
+const rings = VOICES.map((v, i) => ({
+  index: i, voice: v, k: 0, n: 8, rot: 0, pattern: [],
+  barIndex: 0, bar: null, queue: [], qi: 0,
+}));
+
+function setRing(ring, k, n, rot = ring.rot) {
+  ring.k = k; ring.n = n; ring.rot = rot;
+  ring.pattern = rotate(euclid(k, n), rot);
+  if (playing) requeue(ring);
+}
+
+let activePreset = null;
+function applyPreset(p) {
+  p.rings.forEach((spec, i) => setRing(rings[i], spec.k, spec.n, spec.rot ?? 0));
+  activePreset = p.name;
+  refreshChips();
+}
+
+// ---------- canvas ----------
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, DPR = 1, CX = 0, CY = 0, maxR = 0;
+let stars = [];
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  CX = W / 2; CY = H / 2 + 6;
+  maxR = Math.min(W, H) * 0.335;
+  stars = [];
+  const count = Math.floor(W * H / 14000);
+  for (let i = 0; i < count; i++) {
+    stars.push({ x: Math.random() * W, y: Math.random() * H,
+      r: 0.3 + Math.random() * 1.1, tw: 0.5 + Math.random() * 2, ph: Math.random() * TAU });
+  }
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------- audio ----------
+let AC = null, bus = null, send = null, noiseBuf = null, muted = false;
+const PENT = [0, 3, 5, 7, 10];
+
+function audioInit() {
+  if (AC) return;
+  try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
+  const comp = AC.createDynamicsCompressor();
+  comp.threshold.value = -18; comp.knee.value = 24; comp.ratio.value = 4;
+  comp.attack.value = 0.003; comp.release.value = 0.25;
+  comp.connect(AC.destination);
+  bus = AC.createGain(); bus.gain.value = muted ? 0 : 0.55;
+  bus.connect(comp);
+  // a touch of feedback-delay air for snare + bell
+  send = AC.createDelay(1); send.delayTime.value = 0.27;
+  const fb = AC.createGain(); fb.gain.value = 0.32;
+  const wet = AC.createGain(); wet.gain.value = 0.18;
+  send.connect(fb); fb.connect(send); send.connect(wet); wet.connect(bus);
+  noiseBuf = AC.createBuffer(1, AC.sampleRate, AC.sampleRate);
+  const ch = noiseBuf.getChannelData(0);
+  for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
+}
+
+function env(g, t, peak, dur) {
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(Math.max(peak, 0.0002), t + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+}
+
+function kick(t, v) {
+  const o = AC.createOscillator(); o.type = 'sine';
+  o.frequency.setValueAtTime(150, t);
+  o.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+  const g = AC.createGain(); env(g, t, 0.95 * v, 0.4);
+  o.connect(g); g.connect(bus);
+  o.start(t); o.stop(t + 0.45);
+}
+
+function snare(t, v) {
+  const src = AC.createBufferSource(); src.buffer = noiseBuf;
+  src.playbackRate.value = 0.96 + Math.random() * 0.08;
+  const hp = AC.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 1100;
+  const bp = AC.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 2800; bp.Q.value = 0.7;
+  const g = AC.createGain(); env(g, t, 0.4 * v, 0.2);
+  src.connect(hp); hp.connect(bp); bp.connect(g); g.connect(bus);
+  const sg = AC.createGain(); sg.gain.value = 0.25; g.connect(sg); sg.connect(send);
+  src.start(t); src.stop(t + 0.25);
+  // tonal body
+  const o = AC.createOscillator(); o.type = 'triangle';
+  o.frequency.setValueAtTime(196, t);
+  o.frequency.exponentialRampToValueAtTime(130, t + 0.08);
+  const g2 = AC.createGain(); env(g2, t, 0.22 * v, 0.12);
+  o.connect(g2); g2.connect(bus);
+  o.start(t); o.stop(t + 0.16);
+}
+
+function hat(t, v) {
+  const src = AC.createBufferSource(); src.buffer = noiseBuf;
+  src.playbackRate.value = 1 + Math.random() * 0.1;
+  const hp = AC.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 7500;
+  const g = AC.createGain(); env(g, t, 0.17 * v, 0.055);
+  src.connect(hp); hp.connect(g); g.connect(bus);
+  src.start(t); src.stop(t + 0.09);
+}
+
+function bell(t, v, step) {
+  const base = 587.33 * Math.pow(2, PENT[step % PENT.length] / 12); // D5 pentatonic
+  for (const det of [-7, 7]) {
+    const car = AC.createOscillator(); car.type = 'sine';
+    car.frequency.value = base; car.detune.value = det;
+    const mod = AC.createOscillator(); mod.frequency.value = base * 3.53;
+    const mg = AC.createGain();
+    mg.gain.setValueAtTime(base * 2.4, t);
+    mg.gain.exponentialRampToValueAtTime(1, t + 0.45);
+    mod.connect(mg); mg.connect(car.frequency);
+    const g = AC.createGain(); env(g, t, 0.085 * v, 0.65);
+    car.connect(g); g.connect(bus);
+    const sg = AC.createGain(); sg.gain.value = 0.5; g.connect(sg); sg.connect(send);
+    car.start(t); car.stop(t + 0.75);
+    mod.start(t); mod.stop(t + 0.75);
+  }
+}
+
+const SYNTHS = [kick, snare, hat, bell];
+
+// ---------- transport: bar clock + lookahead scheduler ----------
+const LOOKAHEAD = 0.12;     // seconds scheduled ahead of currentTime
+const TICK_MS = 25;         // scheduler timer interval
+let playing = false, bpm = 120, bars = [], timer = null;
+let flashes = [];           // {ring, step, t} — visual blooms at trigger time
+let lastPhase = 0;
+
+const barDur = () => 240 / bpm; // one bar = four beats
+
+function barAt(i) {
+  while (bars.length <= i) {
+    const prev = bars[bars.length - 1];
+    bars.push({ start: prev.start + prev.dur, dur: barDur(), index: bars.length });
+  }
+  return bars[i];
+}
+
+// Load one bar of a ring into its queue via the tested scheduleTimes.
+function enterBar(ring) {
+  const bar = barAt(ring.barIndex);
+  ring.bar = bar;
+  const stepDur = bar.dur / ring.n;
+  const times = scheduleTimes(ring.pattern, stepDur, bar.start);
+  const idx = [];
+  ring.pattern.forEach((h, i) => { if (h) idx.push(i); });
+  ring.queue = times.map((t, j) => ({ t, step: idx[j] }));
+  ring.qi = 0;
+}
+
+// After a live edit: rebuild this ring's current bar, skipping anything
+// already inside the lookahead window (it has been scheduled).
+function requeue(ring) {
+  if (!ring.bar) return;
+  const cutoff = AC.currentTime + LOOKAHEAD;
+  enterBar(ring);
+  while (ring.qi < ring.queue.length && ring.queue[ring.qi].t < cutoff) ring.qi++;
+}
+
+function velocity(step) { return step === 0 ? 1 : step % 2 === 0 ? 0.85 : 0.7; }
+
+function schedulerTick() {
+  if (!playing || !AC) return;
+  const horizon = AC.currentTime + LOOKAHEAD;
+  for (const ring of rings) {
+    let guard = 0;
+    while (guard++ < 64) {
+      while (ring.qi < ring.queue.length && ring.queue[ring.qi].t < horizon) {
+        const ev = ring.queue[ring.qi++];
+        SYNTHS[ring.index](ev.t, velocity(ev.step), ev.step);
+        flashes.push({ ring: ring.index, step: ev.step, t: ev.t });
+      }
+      const barEnd = ring.bar.start + ring.bar.dur;
+      if (ring.qi >= ring.queue.length && barEnd < horizon) {
+        ring.barIndex++;
+        enterBar(ring);
+      } else break;
+    }
+  }
+}
+
+function startTransport() {
+  audioInit();
+  if (!AC) return;
+  if (AC.state === 'suspended') AC.resume();
+  bars = [{ start: AC.currentTime + 0.08, dur: barDur(), index: 0 }];
+  rings.forEach(r => { r.barIndex = 0; enterBar(r); });
+  flashes = [];
+  playing = true;
+  clearInterval(timer);
+  timer = setInterval(schedulerTick, TICK_MS);
+  schedulerTick();
+  playBtn.textContent = 'pause';
+}
+
+function stopTransport() {
+  playing = false;
+  clearInterval(timer);
+  timer = null;
+  playBtn.textContent = 'play';
+}
+
+function togglePlay() { playing ? stopTransport() : startTransport(); }
+
+// ---------- controls ----------
+const playBtn = document.getElementById('play');
+const chipsEl = document.getElementById('chips');
+const diceBtn = document.getElementById('dice');
+const tempoEl = document.getElementById('tempo');
+const bpmLabel = document.getElementById('bpmLabel');
+const toastEl = document.getElementById('toast');
+const introEl = document.getElementById('intro');
+
+let toastTimer = null;
+function toast(msg, ms = 2200) {
+  toastEl.textContent = msg;
+  toastEl.style.opacity = 1;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastEl.style.opacity = 0; }, ms);
+}
+
+const chipEls = new Map();
+for (const p of PRESETS) {
+  const b = document.createElement('button');
+  b.className = 'chip';
+  b.textContent = `${p.name} E(${p.k},${p.n})`;
+  b.addEventListener('click', () => { applyPreset(p); });
+  chipsEl.appendChild(b);
+  chipEls.set(p.name, b);
+}
+function refreshChips() {
+  for (const [name, el] of chipEls) el.classList.toggle('active', name === activePreset);
+}
+
+let diceExplained = false;
+function rollDice() {
+  rollRings(Math.random).forEach((spec, i) => setRing(rings[i], spec.k, spec.n, 0));
+  activePreset = null;
+  refreshChips();
+  if (!diceExplained) {
+    diceExplained = true;
+    toast('every roll is Euclid’s rule — k hits spread evenly over n steps. it almost always grooves.', 4200);
+  }
+}
+diceBtn.addEventListener('click', rollDice);
+playBtn.addEventListener('click', togglePlay);
+
+tempoEl.addEventListener('input', () => {
+  bpm = Number(tempoEl.value);
+  bpmLabel.textContent = `${bpm} bpm`;
+});
+
+// first gesture anywhere wakes the loom (autoplay policy: audio after gesture)
+let started = false;
+function firstGesture() {
+  if (started) return;
+  started = true;
+  introEl.classList.add('hidden');
+  if (!playing) startTransport();
+}
+window.addEventListener('pointerdown', firstGesture, { capture: true });
+
+window.addEventListener('keydown', e => {
+  if (e.code === 'Space') {
+    e.preventDefault();
+    started ? togglePlay() : firstGesture();
+  } else if (e.key === 'm') {
+    muted = !muted;
+    if (bus) bus.gain.value = muted ? 0 : 0.55;
+    toast(muted ? 'muted' : 'sound on', 1400);
+  } else if (e.key === '?') {
+    rollDice();
+  }
+});
+
+// ---------- ring editing ----------
+function ringRadius(ring) { return maxR * ring.voice.rf; }
+
+function ringAt(x, y) {
+  const d = Math.hypot(x - CX, y - CY);
+  let best = null, bestErr = Infinity;
+  for (const ring of rings) {
+    const err = Math.abs(d - ringRadius(ring));
+    if (err < bestErr) { bestErr = err; best = ring; }
+  }
+  return bestErr < maxR * 0.1 ? best : null;
+}
+
+function nudgeRing(ring, dir) {
+  const k = dir > 0 ? (ring.k >= ring.n ? 0 : ring.k + 1) : Math.max(0, ring.k - 1);
+  setRing(ring, k, ring.n);
+  activePreset = null;
+  refreshChips();
+}
+
+let pressTimer = null, longPressed = false;
+canvas.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  const ring = ringAt(e.clientX, e.clientY);
+  longPressed = false;
+  if (!ring) return;
+  pressTimer = setTimeout(() => { longPressed = true; nudgeRing(ring, -1); }, 550);
+});
+canvas.addEventListener('pointerup', e => {
+  clearTimeout(pressTimer);
+  if (e.button !== 0 || longPressed) return;
+  const ring = ringAt(e.clientX, e.clientY);
+  if (ring) nudgeRing(ring, +1);
+});
+canvas.addEventListener('pointercancel', () => clearTimeout(pressTimer));
+canvas.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  const ring = ringAt(e.clientX, e.clientY);
+  if (ring) nudgeRing(ring, -1);
+});
+
+// ---------- rendering ----------
+function currentPhase(tNow) {
+  if (!playing || !bars.length) return lastPhase;
+  for (let i = bars.length - 1; i >= 0; i--) {
+    const b = bars[i];
+    if (tNow >= b.start) {
+      lastPhase = clamp((tNow - b.start) / b.dur, 0, 1) % 1;
+      return lastPhase;
+    }
+  }
+  return 0;
+}
+
+function stepAngle(ring, step) { return -Math.PI / 2 + (step / ring.n) * TAU; }
+
+function drawGem(x, y, size, color, glow, lit, heat) {
+  ctx.save();
+  ctx.translate(x, y);
+  if (lit) {
+    const halo = ctx.createRadialGradient(0, 0, 0, 0, 0, size * (3 + heat * 3));
+    halo.addColorStop(0, glow + (0.32 + heat * 0.45) + ')');
+    halo.addColorStop(1, glow + '0)');
+    ctx.fillStyle = halo;
+    const hr = size * (3 + heat * 3);
+    ctx.fillRect(-hr, -hr, hr * 2, hr * 2);
+    const s = size * (1 + heat * 0.9);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 12 + heat * 14;
+    ctx.fillRect(-s * 0.72, -s * 0.72, s * 1.44, s * 1.44);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = `rgba(255,255,255,${0.55 + heat * 0.45})`;
+    ctx.beginPath(); ctx.arc(0, 0, s * 0.3, 0, TAU); ctx.fill();
+  } else {
+    ctx.fillStyle = 'rgba(160,175,230,0.16)';
+    ctx.beginPath(); ctx.arc(0, 0, size * 0.32, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function frame(ms) {
+  const now = ms / 1000;
+  const tNow = AC ? AC.currentTime : now;
+  const phase = currentPhase(tNow);
+
+  // night sky
+  const sky = ctx.createRadialGradient(CX, CY, maxR * 0.1, CX, CY, Math.max(W, H) * 0.75);
+  sky.addColorStop(0, '#0b1030');
+  sky.addColorStop(0.55, '#05081c');
+  sky.addColorStop(1, '#020111');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+
+  for (const s of stars) {
+    ctx.globalAlpha = 0.12 + 0.5 * ((Math.sin(now * s.tw + s.ph) + 1) / 2);
+    ctx.fillStyle = '#dfe6ff';
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, TAU); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // prune dead flashes
+  if (flashes.length > 400) flashes = flashes.filter(f => tNow - f.t < 0.5);
+
+  const gem = clamp(maxR * 0.035, 4, 9);
+  for (const ring of rings) {
+    const R = ringRadius(ring);
+    // base glow circle
+    ctx.strokeStyle = ring.voice.glow + '0.16)';
+    ctx.lineWidth = 1.4;
+    ctx.shadowColor = ring.voice.color;
+    ctx.shadowBlur = 10;
+    ctx.beginPath(); ctx.arc(CX, CY, R, 0, TAU); ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // comet trail + playhead
+    if (started) {
+      const a = -Math.PI / 2 + phase * TAU;
+      const segs = 22, span = 0.85;
+      for (let j = 0; j < segs; j++) {
+        const f = j / segs;
+        ctx.strokeStyle = ring.voice.glow + (0.38 * (1 - f) * (1 - f)) + ')';
+        ctx.lineWidth = 3.2 * (1 - f) + 0.4;
+        ctx.beginPath();
+        ctx.arc(CX, CY, R, a - span * (f + 1 / segs), a - span * f);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#ffffff';
+      ctx.shadowColor = ring.voice.color;
+      ctx.shadowBlur = 16;
+      ctx.beginPath();
+      ctx.arc(CX + Math.cos(a) * R, CY + Math.sin(a) * R, 3, 0, TAU);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
+    // step cells
+    for (let s = 0; s < ring.n; s++) {
+      const a = stepAngle(ring, s);
+      const x = CX + Math.cos(a) * R, y = CY + Math.sin(a) * R;
+      let heat = 0;
+      for (let i = flashes.length - 1; i >= 0; i--) {
+        const f = flashes[i];
+        if (f.ring === ring.index && f.step === s) {
+          const dt = tNow - f.t;
+          if (dt >= 0 && dt < 0.45) heat = Math.max(heat, 1 - dt / 0.45);
+        }
+      }
+      drawGem(x, y, gem, ring.voice.color, ring.voice.glow, ring.pattern[s], heat);
+    }
+  }
+
+  // ring labels — Georgia serif, left column
+  ctx.textAlign = 'left';
+  const lx = 24;
+  let ly = Math.max(96, CY - maxR);
+  for (let i = rings.length - 1; i >= 0; i--) {
+    const ring = rings[i];
+    ctx.fillStyle = ring.voice.color;
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath(); ctx.arc(lx + 4, ly - 4, 3.4, 0, TAU); ctx.fill();
+    ctx.font = '14px Georgia, serif';
+    ctx.fillText(`${ring.voice.name}  E(${ring.k},${ring.n})`, lx + 16, ly);
+    ctx.globalAlpha = 0.45;
+    ctx.font = '12px Georgia, serif';
+    ctx.fillStyle = '#cfd8ff';
+    ctx.fillText(patternString(ring.pattern), lx + 16, ly + 16);
+    ctx.globalAlpha = 1;
+    ly += 44;
+  }
+
+  // bpm in the loom's heart
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(207,216,255,0.75)';
+  ctx.font = '26px Georgia, serif';
+  ctx.fillText(String(bpm), CX, CY + 2);
+  ctx.fillStyle = 'rgba(159,176,232,0.45)';
+  ctx.font = '11px Georgia, serif';
+  ctx.fillText('bpm', CX, CY + 18);
+
+  requestAnimationFrame(frame);
+}
+
+// ---------- boot: tresillo armed, waiting for the first gesture ----------
+applyPreset(PRESETS[0]);
+requestAnimationFrame(frame);
+
+// read-only handle for the headless acceptance run
+globalThis.__app = {
+  ringSpecs: () => rings.map(r => ({ k: r.k, n: r.n })),
+  isPlaying: () => playing,
+  bpm: () => bpm,
+  ringCenter: ring => {
+    const R = ringRadius(rings[ring]);
+    return { x: CX + R, y: CY };
+  },
+};
+</script>
+</body>
+</html>
