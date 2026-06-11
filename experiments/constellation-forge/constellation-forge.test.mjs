@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { loadLogic } from '../_harness/logic.mjs';
 
 const HTML = new URL('./index.html', import.meta.url).pathname;
@@ -187,6 +188,25 @@ test('forgeLegend: deterministic {name, designation, myth} per seed', () => {
   assert.match(a.name, /^[A-Z][a-z]+$/);
   assert.ok(a.myth.includes(a.name), 'myth must mention the legend name');
   assert.equal(sentencesOf(a.myth).length, 3);
+});
+
+// ---------- slice 4: structural acceptance ----------
+
+test('structure: logic block exports the full documented surface', () => {
+  const logic = loadLogic(HTML);
+  for (const fn of ['mulberry', 'makeSky', 'nearestStar', 'figureHash',
+    'figureTraits', 'forgeName', 'forgeMyth', 'forgeLegend']) {
+    assert.equal(typeof logic[fn], 'function', `${fn} must be a function`);
+  }
+});
+
+test('structure: app consumes the proven logic, not a parallel copy', () => {
+  const html = readFileSync(HTML, 'utf8');
+  assert.match(html, /globalThis\.__logic/, 'app must read from globalThis.__logic');
+  const appScript = html.split(/<script id="logic">[\s\S]*?<\/script>/)[1] ?? '';
+  for (const fn of ['makeSky', 'nearestStar', 'figureHash', 'figureTraits', 'forgeLegend']) {
+    assert.ok(appScript.includes(fn), `app script must use ${fn}`);
+  }
 });
 
 test('forgeLegend: designation is "<greek> <Name> <Latin epithet>"', () => {
