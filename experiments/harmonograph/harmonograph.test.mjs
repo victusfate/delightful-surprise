@@ -41,3 +41,46 @@ test('period: 2π / gcd(p, q) — pendulum frequencies are p and q on a unit bas
   assert.equal(period({ p: 2, q: 4 }), TAU / 2);
   assert.equal(period({ p: 3, q: 5 }), TAU / 1);
 });
+
+// ---------- slice 2: pendulumPoint and the decay envelope ----------
+
+const term = (A, f, phi = 0, d = 0) => ({ A, f, phi, d });
+
+test('pendulumPoint: at t=0 with zero phases, x and y are 0', () => {
+  const { pendulumPoint } = loadLogic(HTML);
+  const params = {
+    xTerms: [term(0.7, 2), term(0.3, 3)],
+    yTerms: [term(0.6, 3), term(0.4, 2)],
+  };
+  const { x, y } = pendulumPoint(0, params);
+  assert.equal(x, 0);
+  assert.equal(y, 0);
+});
+
+test('pendulumPoint: at t=0 with all phases π/2, x = ΣAᵢ', () => {
+  const { pendulumPoint } = loadLogic(HTML);
+  const params = {
+    xTerms: [term(0.7, 2, Math.PI / 2), term(0.3, 3, Math.PI / 2)],
+    yTerms: [term(0.6, 3, Math.PI / 2), term(0.4, 2, Math.PI / 2)],
+  };
+  const { x, y } = pendulumPoint(0, params);
+  assert.ok(Math.abs(x - 1.0) < 1e-12, `x=${x}, want ΣA=1.0`);
+  assert.ok(Math.abs(y - 1.0) < 1e-12, `y=${y}, want ΣA=1.0`);
+});
+
+test('pendulumPoint: single-term envelope A·e^(−d·t) bounds |x| and is non-increasing', () => {
+  const { pendulumPoint } = loadLogic(HTML);
+  const A = 0.9, d = 0.05, f = 2.3;
+  const params = { xTerms: [term(A, f, 0.7, d)], yTerms: [term(A, f, 0.7, d)] };
+  let prevBound = Infinity;
+  for (let t = 0; t <= 60; t += 0.37) {
+    const bound = A * Math.exp(-d * t);
+    const { x } = pendulumPoint(t, params);
+    assert.ok(Math.abs(x) <= bound + 1e-12, `|x(${t})|=${Math.abs(x)} exceeds ${bound}`);
+    assert.ok(bound <= prevBound, `envelope rose at t=${t}`);
+    prevBound = bound;
+  }
+  // the envelope actually bites: late peaks are far below A
+  const late = Math.abs(pendulumPoint(60 + Math.PI / (2 * f), params).x);
+  assert.ok(late < A * 0.1, `expected strong decay by t≈60, got ${late}`);
+});
