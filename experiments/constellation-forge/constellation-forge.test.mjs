@@ -105,3 +105,97 @@ test('figureTraits: spanRatio = max pairwise distance over chart diagonal', () =
   const half = figureTraits([0, 2], stars, w, h);
   assert.ok(Math.abs(half.spanRatio - 0.5) < 1e-9, `half-diagonal should be ~0.5, got ${half.spanRatio}`);
 });
+
+// ---------- slice 3: the forge (names & myths) ----------
+
+const sentencesOf = myth => myth.trim().split(/(?<=\.)\s+/);
+
+test('forgeName: deterministic per rng seed', () => {
+  const { forgeName, mulberry } = loadLogic(HTML);
+  assert.equal(forgeName(mulberry(11)), forgeName(mulberry(11)));
+  assert.notEqual(forgeName(mulberry(11)), forgeName(mulberry(12)));
+});
+
+test('forgeName: capitalized, pronounceable, no 3+ consonant runs', () => {
+  const { forgeName, mulberry } = loadLogic(HTML);
+  for (let seed = 0; seed < 120; seed++) {
+    const name = forgeName(mulberry(seed));
+    assert.match(name, /^[A-Z][a-z]+$/, `bad shape: ${name}`);
+    assert.ok(name.length >= 4 && name.length <= 14, `bad length: ${name}`);
+    assert.doesNotMatch(name.toLowerCase(), /[bcdfghjklmnpqrstvwxz]{3}/,
+      `3+ consonant run in: ${name}`);
+  }
+});
+
+test('forgeName: varies across seeds', () => {
+  const { forgeName, mulberry } = loadLogic(HTML);
+  const names = new Set();
+  for (let seed = 0; seed < 50; seed++) names.add(forgeName(mulberry(seed)));
+  assert.ok(names.size >= 30, `only ${names.size} unique names in 50 seeds`);
+});
+
+test('forgeMyth: deterministic, exactly three sentences, mentions the name', () => {
+  const { forgeMyth, mulberry } = loadLogic(HTML);
+  const traits = { stars: 5, closed: false, spanRatio: 0.3 };
+  const m1 = forgeMyth(mulberry(33), traits, 'Vessara');
+  const m2 = forgeMyth(mulberry(33), traits, 'Vessara');
+  assert.equal(m1, m2, 'same seed must forge the same myth');
+  assert.ok(m1.includes('Vessara'), 'myth must mention the forged name');
+  const sentences = sentencesOf(m1);
+  assert.equal(sentences.length, 3, `expected 3 sentences, got ${sentences.length}: ${m1}`);
+  for (const s of sentences) {
+    assert.match(s, /\.$/, `sentence must end with a period: ${s}`);
+    assert.ok(s.length > 25, `sentence suspiciously short: ${s}`);
+  }
+  assert.doesNotMatch(m1, /[!?]/, 'solemn myths do not exclaim');
+});
+
+test('forgeMyth: closed figures always draw from the crown/ring family', () => {
+  const { forgeMyth, mulberry } = loadLogic(HTML);
+  const traits = { stars: 4, closed: true, spanRatio: 0.2 };
+  for (let seed = 0; seed < 25; seed++) {
+    const m = forgeMyth(mulberry(seed), traits, 'Oreliane');
+    assert.match(m, /\b(crown|ring|circlet|diadem)\b/i, `no crown marker (seed ${seed}): ${m}`);
+  }
+});
+
+test('forgeMyth: wide-span open figures draw from the river family', () => {
+  const { forgeMyth, mulberry } = loadLogic(HTML);
+  const traits = { stars: 4, closed: false, spanRatio: 0.72 };
+  for (let seed = 0; seed < 25; seed++) {
+    const m = forgeMyth(mulberry(seed), traits, 'Thamoris');
+    assert.match(m, /\b(river|current|flood|estuary|headwaters)\b/i, `no river marker (seed ${seed}): ${m}`);
+  }
+});
+
+test('forgeMyth: many-star figures draw from the long-pursuit family', () => {
+  const { forgeMyth, mulberry } = loadLogic(HTML);
+  const traits = { stars: 9, closed: false, spanRatio: 0.3 };
+  for (let seed = 0; seed < 25; seed++) {
+    const m = forgeMyth(mulberry(seed), traits, 'Calvenna');
+    assert.match(m, /\b(pursuit|pursued|chase|chased|hunt|hunted)\b/i, `no pursuit marker (seed ${seed}): ${m}`);
+  }
+});
+
+test('forgeLegend: deterministic {name, designation, myth} per seed', () => {
+  const { forgeLegend } = loadLogic(HTML);
+  const traits = { stars: 5, closed: false, spanRatio: 0.3 };
+  const a = forgeLegend(77, traits);
+  const b = forgeLegend(77, traits);
+  assert.deepEqual(a, b, 'same seed must forge the same legend');
+  assert.notDeepEqual(forgeLegend(78, traits), a, 'different seeds must differ');
+  assert.match(a.name, /^[A-Z][a-z]+$/);
+  assert.ok(a.myth.includes(a.name), 'myth must mention the legend name');
+  assert.equal(sentencesOf(a.myth).length, 3);
+});
+
+test('forgeLegend: designation is "<greek> <Name> <Latin epithet>"', () => {
+  const { forgeLegend } = loadLogic(HTML);
+  const traits = { stars: 6, closed: true, spanRatio: 0.4 };
+  for (const seed of [1, 2, 3, 4, 5]) {
+    const { name, designation } = forgeLegend(seed, traits);
+    assert.match(designation, /^[α-ω] [A-Z][a-z]+ [A-Z][a-z]+$/u,
+      `bad designation: ${designation}`);
+    assert.ok(designation.includes(` ${name} `), `designation must carry the name: ${designation}`);
+  }
+});
