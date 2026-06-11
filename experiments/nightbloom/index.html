@@ -39,8 +39,23 @@
 <div id="hint">[m]ute &nbsp; [s]ave image &nbsp; [c]lear garden</div>
 <div id="toast"></div>
 
+<script id="logic">
+'use strict';
+// Pure, DOM-free math — extracted and unit-tested in Node via
+// experiments/_harness/logic.mjs (see docs/nightbloom/plan.md).
+
+function moonPhase(date) {
+  const synodic = 29.53058867;
+  const knownNew = Date.UTC(2000, 0, 6, 18, 14);
+  const days = (date.getTime() - knownNew) / 86400000;
+  return ((days % synodic) + synodic) % synodic / synodic; // 0 new, .5 full
+}
+
+globalThis.__logic = { moonPhase };
+</script>
 <script>
 'use strict';
+const { moonPhase } = globalThis.__logic;
 
 // ---------- tiny utils ----------
 const TAU = Math.PI * 2;
@@ -103,12 +118,6 @@ function makeHills() {
 }
 
 // ---------- moon (real phase for today) ----------
-function moonPhase(date) {
-  const synodic = 29.53058867;
-  const knownNew = Date.UTC(2000, 0, 6, 18, 14);
-  const days = (date.getTime() - knownNew) / 86400000;
-  return ((days % synodic) + synodic) % synodic / synodic; // 0 new, .5 full
-}
 const PHASE = moonPhase(new Date());
 
 function drawMoon(t) {

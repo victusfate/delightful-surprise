@@ -6,14 +6,17 @@ const HTML = new URL('./index.html', import.meta.url).pathname;
 const SYNODIC_MS = 29.53058867 * 86400000;
 const KNOWN_NEW = Date.UTC(2000, 0, 6, 18, 14);
 
+// phase is cyclic: 0.9999 and 0 are the same moon
+const circDist = (a, b) => Math.min(Math.abs(a - b), 1 - Math.abs(a - b));
+
 test('moonPhase: a known new moon is ~0', () => {
   const { moonPhase } = loadLogic(HTML);
-  assert.ok(moonPhase(new Date(KNOWN_NEW)) < 0.001);
+  assert.ok(circDist(moonPhase(new Date(KNOWN_NEW)), 0) < 0.001);
 });
 
 test('moonPhase: one synodic month after a new moon is new again', () => {
   const { moonPhase } = loadLogic(HTML);
-  assert.ok(moonPhase(new Date(KNOWN_NEW + SYNODIC_MS)) < 0.001);
+  assert.ok(circDist(moonPhase(new Date(KNOWN_NEW + SYNODIC_MS)), 0) < 0.001);
 });
 
 test('moonPhase: half a synodic month after a new moon is full', () => {
