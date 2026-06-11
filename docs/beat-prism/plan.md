@@ -19,9 +19,11 @@ Conventions fixed up front:
   `nowMs − lastOnsetMs ≥ refractoryMs` (default 180, k default 1.5,
   window default 43). Returns `{ fired, state }` without mutating input.
 - `estimateBpm(onsetTimesMs)` → null until ≥ 8 onsets; otherwise each
-  inter-onset interval is converted to BPM, folded by octave into
-  [70, 180), histogrammed in 1-BPM bins, and the mean of values within
-  ±3 BPM of the modal bin is returned.
+  inter-onset interval is folded by octave into the [70, 180) BPM range
+  and histogrammed in the *period* domain (15 ms bins); the estimate is
+  60000 / mean of the periods within two bins of the modal bin. (Period
+  domain because timing jitter is linear there — a BPM-domain mean skews
+  sharp; found during slice 3 RED.)
 
 ## Slice 1 — flux and band energy
 

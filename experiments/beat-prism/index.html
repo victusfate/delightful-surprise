@@ -75,7 +75,35 @@ function stepOnset(state, flux, nowMs, opts = {}) {
   return { fired, state: { history: nextHistory, lastOnsetMs: fired ? nowMs : lastOnsetMs } };
 }
 
-globalThis.__logic = { spectralFlux, bandEnergy, adaptiveThreshold, stepOnset };
+// Tempo from the inter-onset-interval histogram. Each IOI is folded by
+// octave into the [70, 180) BPM range and histogrammed in the *period*
+// domain (15 ms bins) — periods are linear in timing jitter, so the mean
+// of the modal bin's neighborhood stays unbiased where a BPM-domain mean
+// would skew sharp. Null until ≥ 8 onsets.
+function estimateBpm(onsetTimesMs) {
+  if (!onsetTimesMs || onsetTimesMs.length < 8) return null;
+  const MIN_P = 60000 / 180, MAX_P = 60000 / 70, BIN = 15;
+  const periods = [];
+  for (let i = 1; i < onsetTimesMs.length; i++) {
+    let p = onsetTimesMs[i] - onsetTimesMs[i - 1];
+    if (p <= 0) continue;
+    while (p < MIN_P) p *= 2;
+    while (p >= MAX_P) p /= 2;
+    periods.push(p);
+  }
+  if (!periods.length) return null;
+  const bins = new Map();
+  for (const p of periods) {
+    const bin = Math.round(p / BIN);
+    bins.set(bin, (bins.get(bin) ?? 0) + 1);
+  }
+  let mode = 0, best = -1;
+  for (const [bin, count] of bins) if (count > best) { best = count; mode = bin; }
+  const near = periods.filter(p => Math.abs(p - mode * BIN) <= BIN * 2);
+  return 60000 / (near.reduce((a, b) => a + b, 0) / near.length);
+}
+
+globalThis.__logic = { spectralFlux, bandEnergy, adaptiveThreshold, stepOnset, estimateBpm };
 })();
 </script>
 <script>
