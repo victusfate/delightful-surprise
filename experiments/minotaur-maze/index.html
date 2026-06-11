@@ -4,8 +4,58 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>minotaur maze — race the thread</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #04060f; }
+  canvas { display: block; }
+  .serif { font-family: Georgia, 'Times New Roman', serif; color: #cfd8ff; }
+  #title {
+    position: fixed; inset: 0; pointer-events: none;
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+    padding-top: 7vh; text-align: center;
+    text-shadow: 0 0 18px rgba(120,160,255,.5);
+    transition: opacity 2s ease;
+  }
+  #title h1 { font-size: 2.2rem; font-weight: normal; letter-spacing: .35em; margin: 0 0 .5rem; opacity: .92; }
+  #title p { font-size: .95rem; letter-spacing: .14em; opacity: .6; margin: .2rem 0; }
+  #title.hidden { opacity: 0; }
+  #verdict {
+    position: fixed; inset: 0; pointer-events: none;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; opacity: 0; transition: opacity 1.8s ease;
+    text-shadow: 0 0 22px rgba(255,210,120,.45);
+  }
+  #verdict.lost { text-shadow: 0 0 22px rgba(255,90,70,.5); }
+  #verdict h2 { font-size: 1.9rem; font-weight: normal; letter-spacing: .12em; margin: 0 1.5rem .7rem; max-width: 44rem; }
+  #verdict p { font-size: .95rem; letter-spacing: .18em; opacity: .65; margin: 0; }
+  #verdict.shown { opacity: 1; }
+  #hud {
+    position: fixed; bottom: 14px; right: 18px; pointer-events: none;
+    font-size: .78rem; letter-spacing: .1em; color: rgba(180,195,255,.45);
+  }
+  #seedline {
+    position: fixed; bottom: 14px; left: 18px; pointer-events: none;
+    font-size: .78rem; letter-spacing: .12em; color: rgba(180,195,255,.4);
+  }
+  #toast {
+    position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
+    pointer-events: none; font-size: .9rem; letter-spacing: .15em;
+    color: rgba(200,215,255,.85); text-shadow: 0 0 14px rgba(120,160,255,.6);
+    opacity: 0; transition: opacity .6s ease;
+  }
+</style>
 </head>
 <body>
+<canvas id="c"></canvas>
+<div id="title" class="serif">
+  <h1>the labyrinth</h1>
+  <p>watch it being carved — remember the way</p>
+  <p>then outrun ariadne&rsquo;s thread to the door</p>
+</div>
+<div id="verdict" class="serif"><h2 id="verdict-line"></h2><p>press r to descend again</p></div>
+<div id="hud" class="serif">[&larr;&uarr;&darr;&rarr;] run &nbsp; [r] new labyrinth &nbsp; [m]ute</div>
+<div id="seedline" class="serif"></div>
+<div id="toast" class="serif"></div>
+
 <script id="logic">
 'use strict';
 // Pure, DOM-free maze math — unit-tested in Node via
@@ -106,6 +156,469 @@ function solve(maze, start, end) {
 
 globalThis.__logic = { mulberry, generateMaze, solve, canMove, neighbors, DIRS };
 })();
+</script>
+<script>
+'use strict';
+const { mulberry, generateMaze, solve, canMove, neighbors } = globalThis.__logic;
+
+// ---------- constants ----------
+const TAU = Math.PI * 2;
+const COLS = 25, ROWS = 17;
+const CARVE_S = 3.0;          // carving ballet duration
+const FOG_S = 0.9;            // fog falling duration
+const THREAD_DELAY = 1.0;     // the thread stirs a beat after the race begins
+const THREAD_MS = 230;        // thread pace per cell — tuned so a decent run barely wins
+const MOVE_MS = 95;           // held-key repeat
+const WIN_LINES = [
+  'You step into sunlight while the thread still wanders the dark.',
+  'Daedalus built well — but you ran better.',
+  'The horned one waits forever; you are already gone.',
+  'The string arrives to an empty hall. The door stands open.',
+];
+const LOSE_LINES = [
+  'The thread reached the heart of the maze first. Something horned turns toward you.',
+  'Ariadne’s gift arrives — and the labyrinth keeps you.',
+  'In the dark: hooves. The thread was faster.',
+  'The golden string goes slack. You were not at its end.',
+];
+
+// ---------- canvas ----------
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const fogCanvas = document.createElement('canvas');
+const fctx = fogCanvas.getContext('2d');
+let W = 0, H = 0, DPR = 1, cs = 0, ox = 0, oy = 0;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  fogCanvas.width = W * DPR; fogCanvas.height = H * DPR;
+  fctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  cs = Math.min((W - 70) / COLS, (H - 150) / ROWS);
+  ox = (W - COLS * cs) / 2;
+  oy = (H - ROWS * cs) / 2 + 22;
+}
+window.addEventListener('resize', resize);
+
+const cx = cell => ox + (cell % COLS) * cs + cs / 2;
+const cy = cell => oy + ((cell / COLS) | 0) * cs + cs / 2;
+
+// ---------- game state ----------
+const G = {
+  phase: 'carving',   // carving | fog | race | won | lost
+  seed: 0, maze: null, path: [],
+  carveI: 0, phaseT0: 0, raceT0: 0,
+  player: 0, px: 0, py: 0, trail: [],
+  threadF: 0,         // fractional cells of the path the thread has claimed
+  verdictAt: 0, flavor: '',
+  firstSeen: null,    // first carveOrder index per cell, for materialising walls
+};
+globalThis.__game = G; // acceptance-test handle
+
+function seedFromHash() {
+  const m = (location.hash || '').match(/seed=(\d+)/);
+  return m ? (parseInt(m[1], 10) >>> 0) : ((Math.random() * 0xffffffff) >>> 0) % 1000000;
+}
+
+function newGame(seed) {
+  G.seed = seed >>> 0;
+  G.maze = generateMaze(COLS, ROWS, G.seed);
+  G.path = solve(G.maze, 0, COLS * ROWS - 1);
+  G.firstSeen = new Int32Array(COLS * ROWS).fill(-1);
+  G.maze.carveOrder.forEach((c, i) => { if (G.firstSeen[c] === -1) G.firstSeen[c] = i; });
+  G.phase = 'carving';
+  G.carveI = 0;
+  G.phaseT0 = now;
+  G.player = 0; G.px = cx(0); G.py = cy(0);
+  G.trail = [0];
+  G.threadF = 0;
+  G.flavor = '';
+  history.replaceState(null, '', '#seed=' + G.seed);
+  seedline.textContent = 'seed ' + G.seed;
+  titleEl.classList.remove('hidden');
+  verdictEl.classList.remove('shown', 'lost');
+}
+
+// ---------- audio ----------
+let AC = null, bus = null, muted = false;
+function audioInit() {
+  if (AC) return;
+  try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
+  bus = AC.createGain(); bus.gain.value = muted ? 0 : 0.55;
+  bus.connect(AC.destination);
+  const delay = AC.createDelay(1); delay.delayTime.value = 0.31;
+  const fb = AC.createGain(); fb.gain.value = 0.38;
+  const wet = AC.createGain(); wet.gain.value = 0.3;
+  bus.connect(delay); delay.connect(fb); fb.connect(delay); delay.connect(wet); wet.connect(AC.destination);
+}
+function tone(freqHz, when, vol, dur, type = 'triangle') {
+  if (!AC) return;
+  const t0 = AC.currentTime + when;
+  const o = AC.createOscillator(); o.type = type; o.frequency.value = freqHz;
+  const g = AC.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol, t0 + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g); g.connect(bus);
+  o.start(t0); o.stop(t0 + dur + 0.1);
+}
+function drum() { // quiet drumbeat: the race begins
+  if (!AC) return;
+  const t0 = AC.currentTime;
+  const o = AC.createOscillator(); o.type = 'sine';
+  o.frequency.setValueAtTime(82, t0);
+  o.frequency.exponentialRampToValueAtTime(38, t0 + 0.22);
+  const g = AC.createGain();
+  g.gain.setValueAtTime(0.5, t0);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.3);
+  o.connect(g); g.connect(bus);
+  o.start(t0); o.stop(t0 + 0.35);
+}
+function step() { tone(660 + Math.random() * 80, 0, 0.012, 0.07, 'sine'); }
+function victory() { [0, 4, 7, 12, 16].forEach((s, i) => tone(440 * Math.pow(2, s / 12), i * 0.11, 0.12, 1.6)); }
+function doom() { tone(55, 0, 0.22, 2.8, 'sawtooth'); tone(58.27, 0.05, 0.14, 2.6, 'sawtooth'); drum(); }
+
+// ---------- DOM ----------
+const titleEl = document.getElementById('title');
+const verdictEl = document.getElementById('verdict');
+const verdictLine = document.getElementById('verdict-line');
+const seedline = document.getElementById('seedline');
+const toastEl = document.getElementById('toast');
+let toastTimer = null;
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.style.opacity = 1;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.style.opacity = 0, 1600);
+}
+
+// ---------- input ----------
+const KEY_DIR = { ArrowUp: 'N', ArrowRight: 'E', ArrowDown: 'S', ArrowLeft: 'W' };
+const held = [];
+let lastMove = 0;
+
+function tryMove(dir) {
+  if (G.phase !== 'race') return;
+  if (!canMove(G.maze, G.player, dir)) return;
+  const d = globalThis.__logic.DIRS[dir];
+  G.player += d.dy * COLS + d.dx;
+  G.trail.push(G.player);
+  step();
+  if (G.player === COLS * ROWS - 1) endRace(true);
+}
+
+function endRace(won) {
+  G.phase = won ? 'won' : 'lost';
+  G.verdictAt = now;
+  const lines = won ? WIN_LINES : LOSE_LINES;
+  G.flavor = lines[(Math.random() * lines.length) | 0];
+  verdictLine.textContent = G.flavor;
+  verdictEl.classList.toggle('lost', !won);
+  verdictEl.classList.add('shown');
+  won ? victory() : doom();
+}
+
+window.addEventListener('keydown', e => {
+  audioInit();
+  if (AC && AC.state === 'suspended') AC.resume();
+  const dir = KEY_DIR[e.key];
+  if (dir) {
+    e.preventDefault();
+    if (!e.repeat) {
+      if (!held.includes(dir)) held.push(dir);
+      tryMove(dir);
+      lastMove = now;
+    }
+  } else if (e.key === 'r') {
+    newGame(((Math.random() * 0xffffffff) >>> 0) % 1000000);
+    toast('a new labyrinth is carved');
+  } else if (e.key === 'm') {
+    muted = !muted;
+    if (bus) bus.gain.value = muted ? 0 : 0.55;
+    toast(muted ? 'muted' : 'sound on');
+  }
+});
+window.addEventListener('keyup', e => {
+  const dir = KEY_DIR[e.key];
+  const i = held.indexOf(dir);
+  if (i >= 0) held.splice(i, 1);
+});
+window.addEventListener('pointerdown', () => {
+  audioInit();
+  if (AC && AC.state === 'suspended') AC.resume();
+});
+
+// ---------- drawing ----------
+function bg() {
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#04050e');
+  sky.addColorStop(0.5, '#0a1028');
+  sky.addColorStop(1, '#05070f');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+  // torchlit vignette breathing
+  const v = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.2, W / 2, H / 2, Math.max(W, H) * 0.75);
+  v.addColorStop(0, 'rgba(30,40,80,0.10)');
+  v.addColorStop(1, 'rgba(0,0,0,0.45)');
+  ctx.fillStyle = v;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawWalls(upTo) {
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(120,150,210,0.6)';
+  ctx.lineWidth = Math.max(1.2, cs * 0.09);
+  ctx.shadowColor = 'rgba(90,130,255,0.35)';
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  const { walls } = G.maze;
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      const cell = y * COLS + x;
+      if (upTo !== Infinity && (G.firstSeen[cell] === -1 || G.firstSeen[cell] > upTo)) continue;
+      const X = ox + x * cs, Y = oy + y * cs;
+      if (walls[cell] & 1) { ctx.moveTo(X, Y); ctx.lineTo(X + cs, Y); }
+      if ((walls[cell] & 8) && cell !== 0) { ctx.moveTo(X, Y); ctx.lineTo(X, Y + cs); }
+      if (y === ROWS - 1 && (walls[cell] & 4)) { ctx.moveTo(X, Y + cs); ctx.lineTo(X + cs, Y + cs); }
+      if (x === COLS - 1 && (walls[cell] & 2) && cell !== COLS * ROWS - 1) { ctx.moveTo(X + cs, Y); ctx.lineTo(X + cs, Y + cs); }
+    }
+  }
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+}
+
+function drawFloor(upTo) {
+  ctx.fillStyle = 'rgba(40,55,95,0.18)';
+  for (let cell = 0; cell < COLS * ROWS; cell++) {
+    if (upTo !== Infinity && (G.firstSeen[cell] === -1 || G.firstSeen[cell] > upTo)) continue;
+    ctx.fillRect(ox + (cell % COLS) * cs + 1, oy + ((cell / COLS) | 0) * cs + 1, cs - 2, cs - 2);
+  }
+}
+
+function drawCarving(t) {
+  const order = G.maze.carveOrder;
+  const f = Math.min(1, (t - G.phaseT0) / CARVE_S);
+  G.carveI = Math.floor(f * (order.length - 1));
+  drawFloor(G.carveI);
+  drawWalls(G.carveI);
+  // chisel-head trail — the carving ballet
+  for (let k = 0; k < 46; k++) {
+    const i = G.carveI - k;
+    if (i < 0) break;
+    const cell = order[i];
+    const a = (1 - k / 46) * 0.5;
+    ctx.fillStyle = `rgba(140,220,255,${a})`;
+    ctx.beginPath();
+    ctx.arc(cx(cell), cy(cell), cs * 0.16 * (1 - k / 60), 0, TAU);
+    ctx.fill();
+  }
+  const head = order[G.carveI];
+  const hx = cx(head), hy = cy(head);
+  const halo = ctx.createRadialGradient(hx, hy, 0, hx, hy, cs * 2.2);
+  halo.addColorStop(0, 'rgba(170,230,255,0.5)');
+  halo.addColorStop(1, 'rgba(170,230,255,0)');
+  ctx.fillStyle = halo;
+  ctx.fillRect(hx - cs * 2.2, hy - cs * 2.2, cs * 4.4, cs * 4.4);
+  ctx.fillStyle = '#eaffff';
+  ctx.shadowColor = '#aef'; ctx.shadowBlur = 14;
+  ctx.beginPath(); ctx.arc(hx, hy, cs * 0.2, 0, TAU); ctx.fill();
+  ctx.shadowBlur = 0;
+  if (f >= 1) { G.phase = 'fog'; G.phaseT0 = t; }
+}
+
+function threadPoint(fi) { // position along the path at fractional index fi
+  const i = Math.min(G.path.length - 1, Math.floor(fi));
+  const j = Math.min(G.path.length - 1, i + 1);
+  const u = fi - i;
+  return { x: cx(G.path[i]) * (1 - u) + cx(G.path[j]) * u,
+           y: cy(G.path[i]) * (1 - u) + cy(G.path[j]) * u };
+}
+
+function drawThread(t) {
+  if (G.threadF <= 0) return;
+  const n = Math.floor(G.threadF);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(255,210,110,0.85)';
+  ctx.lineWidth = Math.max(1.5, cs * 0.1);
+  ctx.shadowColor = 'rgba(255,200,90,0.9)';
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  ctx.moveTo(cx(G.path[0]), cy(G.path[0]));
+  for (let i = 1; i <= n && i < G.path.length; i++) ctx.lineTo(cx(G.path[i]), cy(G.path[i]));
+  const tip = threadPoint(G.threadF);
+  ctx.lineTo(tip.x, tip.y);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  // the bead at the thread's head
+  const pulse = 1 + Math.sin(t * 9) * 0.18;
+  const bead = ctx.createRadialGradient(tip.x, tip.y, 0, tip.x, tip.y, cs * 1.1 * pulse);
+  bead.addColorStop(0, 'rgba(255,235,170,0.9)');
+  bead.addColorStop(1, 'rgba(255,235,170,0)');
+  ctx.fillStyle = bead;
+  ctx.fillRect(tip.x - cs * 1.5, tip.y - cs * 1.5, cs * 3, cs * 3);
+  ctx.fillStyle = '#fff3cf';
+  ctx.beginPath(); ctx.arc(tip.x, tip.y, cs * 0.13, 0, TAU); ctx.fill();
+}
+
+function drawTrail(alpha) {
+  ctx.strokeStyle = `rgba(255,150,90,${alpha})`;
+  ctx.lineWidth = Math.max(1.2, cs * 0.07);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(cx(G.trail[0]), cy(G.trail[0]));
+  for (let i = 1; i < G.trail.length; i++) ctx.lineTo(cx(G.trail[i]), cy(G.trail[i]));
+  ctx.stroke();
+}
+
+function drawPlayer(t) {
+  // lerp toward the player's cell for smooth motion
+  const tx = cx(G.player), ty = cy(G.player);
+  G.px += (tx - G.px) * 0.35;
+  G.py += (ty - G.py) * 0.35;
+  const flicker = 1 + Math.sin(t * 11) * 0.05 + Math.sin(t * 23.7) * 0.03;
+  const r = cs * 2.9 * flicker;
+  const lamp = ctx.createRadialGradient(G.px, G.py, 0, G.px, G.py, r);
+  lamp.addColorStop(0, 'rgba(255,214,140,0.85)');
+  lamp.addColorStop(0.4, 'rgba(255,180,90,0.32)');
+  lamp.addColorStop(1, 'rgba(255,170,80,0)');
+  ctx.fillStyle = lamp;
+  ctx.fillRect(G.px - r, G.py - r, r * 2, r * 2);
+  ctx.fillStyle = '#fff1d6';
+  ctx.shadowColor = '#ffce8a'; ctx.shadowBlur = 18;
+  ctx.beginPath(); ctx.arc(G.px, G.py, cs * 0.22, 0, TAU); ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+function drawExit(t) {
+  const ex = cx(COLS * ROWS - 1), ey = cy(COLS * ROWS - 1);
+  if (G.phase === 'won') {
+    const f = Math.min(1, (now - G.verdictAt) / 1.2);
+    const r = cs * (1.2 + f * 4);
+    const bloom = ctx.createRadialGradient(ex, ey, 0, ex, ey, r);
+    bloom.addColorStop(0, 'rgba(255,230,150,0.9)');
+    bloom.addColorStop(1, 'rgba(255,210,110,0)');
+    ctx.fillStyle = bloom;
+    ctx.fillRect(ex - r, ey - r, r * 2, r * 2);
+    for (let k = 0; k < 3; k++) {
+      const ringR = cs * (0.5 + ((now - G.verdictAt) * 1.6 + k * 0.7) % 3.2);
+      ctx.strokeStyle = `rgba(255,225,140,${0.5 * (1 - ringR / (cs * 3.6))})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(ex, ey, ringR, 0, TAU); ctx.stroke();
+    }
+  } else if (G.phase === 'lost') {
+    const pulse = 0.7 + Math.sin(t * 3.2) * 0.3;
+    const r = cs * 2.6 * pulse;
+    const glow = ctx.createRadialGradient(ex, ey, 0, ex, ey, r);
+    glow.addColorStop(0, 'rgba(255,70,50,0.75)');
+    glow.addColorStop(1, 'rgba(180,30,20,0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(ex - r, ey - r, r * 2, r * 2);
+    // two embers — the eyes
+    ctx.fillStyle = '#ff5040';
+    ctx.shadowColor = '#f30'; ctx.shadowBlur = 10;
+    ctx.beginPath(); ctx.arc(ex - cs * 0.14, ey - cs * 0.08, cs * 0.07, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(ex + cs * 0.14, ey - cs * 0.08, cs * 0.07, 0, TAU); ctx.fill();
+    ctx.shadowBlur = 0;
+  } else {
+    // a faint promise of daylight at the door
+    const breathe = 0.25 + Math.sin(t * 1.3) * 0.08;
+    const glow = ctx.createRadialGradient(ex, ey, 0, ex, ey, cs * 1.4);
+    glow.addColorStop(0, `rgba(255,225,150,${breathe})`);
+    glow.addColorStop(1, 'rgba(255,225,150,0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(ex - cs * 1.4, ey - cs * 1.4, cs * 2.8, cs * 2.8);
+  }
+}
+
+function drawFog(alpha) {
+  fctx.clearRect(0, 0, W, H);
+  fctx.fillStyle = `rgba(3,5,14,${0.94 * alpha})`;
+  fctx.fillRect(0, 0, W, H);
+  fctx.globalCompositeOperation = 'destination-out';
+  // lantern hole
+  const r = cs * 3.1;
+  const hole = fctx.createRadialGradient(G.px, G.py, 0, G.px, G.py, r);
+  hole.addColorStop(0, 'rgba(0,0,0,1)');
+  hole.addColorStop(0.45, 'rgba(0,0,0,0.85)');
+  hole.addColorStop(1, 'rgba(0,0,0,0)');
+  fctx.fillStyle = hole;
+  fctx.fillRect(G.px - r, G.py - r, r * 2, r * 2);
+  // the thread smoulders through the fog where it has passed
+  if (G.threadF > 0) {
+    const n = Math.floor(G.threadF);
+    fctx.strokeStyle = 'rgba(0,0,0,0.42)';
+    fctx.lineWidth = cs * 1.0;
+    fctx.lineCap = 'round'; fctx.lineJoin = 'round';
+    fctx.beginPath();
+    fctx.moveTo(cx(G.path[0]), cy(G.path[0]));
+    for (let i = 1; i <= n && i < G.path.length; i++) fctx.lineTo(cx(G.path[i]), cy(G.path[i]));
+    const tip = threadPoint(G.threadF);
+    fctx.lineTo(tip.x, tip.y);
+    fctx.stroke();
+  }
+  fctx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(fogCanvas, 0, 0, W, H);
+}
+
+// ---------- main loop ----------
+let now = 0, last = 0;
+function frame(ms) {
+  now = ms / 1000;
+  const dt = Math.min(0.05, now - last || 0.016);
+  last = now;
+  bg();
+
+  if (G.phase === 'carving') {
+    drawCarving(now);
+  } else {
+    drawFloor(Infinity);
+    drawWalls(Infinity);
+
+    if (G.phase === 'fog') {
+      const f = Math.min(1, (now - G.phaseT0) / FOG_S);
+      drawExit(now);
+      drawFog(f);
+      drawPlayer(now);
+      if (f >= 1) {
+        G.phase = 'race';
+        G.raceT0 = now;
+        titleEl.classList.add('hidden');
+        drum();
+      }
+    } else if (G.phase === 'race') {
+      // held-key repeat
+      if (held.length && now - lastMove > MOVE_MS / 1000) {
+        tryMove(held[held.length - 1]);
+        lastMove = now;
+      }
+      // the thread advances
+      const tElapsed = now - G.raceT0 - THREAD_DELAY;
+      if (tElapsed > 0) G.threadF = Math.min(G.path.length - 1, tElapsed / (THREAD_MS / 1000));
+      drawThread(now);
+      drawExit(now);
+      drawFog(1);
+      drawPlayer(now);
+      if (G.threadF >= G.path.length - 1 && G.phase === 'race') endRace(false);
+    } else { // won | lost
+      const f = Math.min(1, (now - G.verdictAt) / 2.2);
+      drawThread(now);
+      drawTrail(G.phase === 'lost' ? 0.7 : 0.35);
+      drawExit(now);
+      // fog lifts on loss to reveal your path against the thread's;
+      // on victory it lingers, pierced by the blooming door
+      drawFog(G.phase === 'lost' ? 1 - f * 0.85 : 1 - f * 0.45);
+      drawPlayer(now);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+resize();
+newGame(seedFromHash());
+requestAnimationFrame(frame);
 </script>
 </body>
 </html>
