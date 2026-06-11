@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>constellation forge — a star chart with empty mythology</title>
+</head>
+<body>
+
+<script id="logic">
+'use strict';
+// Pure, DOM-free logic — extracted and unit-tested in Node via
+// experiments/_harness/logic.mjs (see docs/constellation-forge/plan.md).
+// IIFE so only __logic reaches the shared global scope.
+(() => {
+
+// mulberry32 — small, fast, seedable RNG; values in [0, 1).
+function mulberry(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+// Deterministic star field: n stars inside a small margin, mag in [0.2, 1].
+function makeSky(seed, w, h, n) {
+  const rng = mulberry(seed);
+  const mx = w * 0.03, my = h * 0.03;
+  const stars = [];
+  for (let i = 0; i < n; i++) {
+    stars.push({
+      x: mx + rng() * (w - 2 * mx),
+      y: my + rng() * (h - 2 * my),
+      mag: 0.2 + rng() * 0.8,
+    });
+  }
+  return stars;
+}
+
+// Index of the star nearest (x, y) within maxR, else -1.
+function nearestStar(stars, x, y, maxR) {
+  let best = -1, bestD = maxR * maxR;
+  for (let i = 0; i < stars.length; i++) {
+    const dx = stars[i].x - x, dy = stars[i].y - y;
+    const d = dx * dx + dy * dy;
+    if (d <= bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+globalThis.__logic = { mulberry, makeSky, nearestStar };
+})();
+</script>
+<script>
+'use strict';
+// App shell — built out in slice 4.
+</script>
+</body>
+</html>
