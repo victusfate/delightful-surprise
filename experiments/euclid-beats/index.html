@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>euclid-beats — a drum loom</title>
+</head>
+<body>
+
+<script id="logic">
+'use strict';
+// Pure, DOM-free rhythm math — extracted and unit-tested in Node via
+// experiments/_harness/logic.mjs (see docs/euclid-beats/plan.md).
+// IIFE so only __logic reaches the shared global scope.
+(() => {
+
+// Bjorklund / Toussaint: distribute k hits as evenly as possible across
+// n steps. Pairs the long and short runs until one remainder is left.
+function euclid(k, n) {
+  if (n <= 0) return [];
+  if (k <= 0) return new Array(n).fill(false);
+  if (k >= n) return new Array(n).fill(true);
+  let a = Array.from({ length: k }, () => [true]);
+  let b = Array.from({ length: n - k }, () => [false]);
+  while (b.length > 1) {
+    const m = Math.min(a.length, b.length);
+    const merged = [];
+    for (let i = 0; i < m; i++) merged.push(a[i].concat(b[i]));
+    const rest = a.length > m ? a.slice(m) : b.slice(m);
+    a = merged;
+    b = rest;
+  }
+  return a.flat().concat(b.flat());
+}
+
+const patternString = pattern => pattern.map(v => (v ? 'x' : '.')).join('');
+
+globalThis.__logic = { euclid, patternString };
+})();
+</script>
+<script>
+'use strict';
+// App shell arrives in slice 4.
+</script>
+</body>
+</html>
