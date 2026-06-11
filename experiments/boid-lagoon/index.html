@@ -63,7 +63,17 @@ function cohesion(b, neighbors) {
   return { x: cx - b.x, y: cy - b.y };
 }
 
-globalThis.__logic = { limit, clampSpeed, separation, alignment, cohesion };
+// Zero outside `radius`; inside, an away-vector whose strength grows as the
+// threat closes (linear-in-proximity panic over inverse distance).
+function flee(b, threat, radius) {
+  const dx = b.x - threat.x, dy = b.y - threat.y;
+  const d = Math.hypot(dx, dy);
+  if (d >= radius || d === 0) return { x: 0, y: 0 };
+  const k = (radius - d) / radius / d; // normalize away-vector, scale by proximity
+  return { x: dx * k, y: dy * k };
+}
+
+globalThis.__logic = { limit, clampSpeed, separation, alignment, cohesion, flee };
 })();
 </script>
 </body>
