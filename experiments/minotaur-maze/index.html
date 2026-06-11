@@ -70,7 +70,41 @@ function generateMaze(w, h, seed) {
   return { walls, w, h, carveOrder };
 }
 
-globalThis.__logic = { mulberry, generateMaze, DIRS };
+// True when the wall toward `dir` ('N'|'E'|'S'|'W') is carved open.
+// Grid edges are always closed (outer walls are never carved).
+function canMove(maze, cell, dir) {
+  return (maze.walls[cell] & DIRS[dir].bit) === 0;
+}
+
+// Open-adjacent cell indices, in N, E, S, W order.
+function neighbors(maze, cell) {
+  const out = [];
+  if (canMove(maze, cell, 'N')) out.push(cell - maze.w);
+  if (canMove(maze, cell, 'E')) out.push(cell + 1);
+  if (canMove(maze, cell, 'S')) out.push(cell + maze.w);
+  if (canMove(maze, cell, 'W')) out.push(cell - 1);
+  return out;
+}
+
+// BFS shortest path start -> end as an array of cell indices, [] if none.
+function solve(maze, start, end) {
+  const prev = new Int32Array(maze.w * maze.h).fill(-1);
+  prev[start] = start;
+  const queue = [start];
+  for (let qi = 0; qi < queue.length; qi++) {
+    const cell = queue[qi];
+    if (cell === end) break;
+    for (const next of neighbors(maze, cell)) {
+      if (prev[next] === -1) { prev[next] = cell; queue.push(next); }
+    }
+  }
+  if (prev[end] === -1) return [];
+  const path = [end];
+  for (let cell = end; cell !== start; cell = prev[cell]) path.push(prev[cell]);
+  return path.reverse();
+}
+
+globalThis.__logic = { mulberry, generateMaze, solve, canMove, neighbors, DIRS };
 })();
 </script>
 </body>
