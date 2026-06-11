@@ -356,6 +356,31 @@ function sliceOffsets(seed, count, maxOffset) {
 const wedgeAngles = n =>
   Array.from({ length: n }, (_, i) => (i * Math.PI * 2) / n);
 
+// Shuffle conductor: deal the hand for one 4-bar window. Seeded and
+// deterministic; draws only from enabledIds; caps at 2 per category and
+// 2 heavy effects; targets 4–6, smaller only if the pool runs dry. Pure.
+function dealHand(registry, seed, enabledIds) {
+  const rng = mulberry32(seed);
+  const enabled = new Set(enabledIds);
+  const pool = registry.filter(e => enabled.has(e.id));
+  for (let i = pool.length - 1; i > 0; i--) {     // Fisher–Yates with the seeded rng
+    const j = Math.floor(rng() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  const target = 4 + Math.floor(rng() * 3);       // 4–6
+  const hand = [], perCat = {};
+  let heavies = 0;
+  for (const e of pool) {
+    if (hand.length >= target) break;
+    if ((perCat[e.cat] ?? 0) >= 2) continue;
+    if (e.heavy && heavies >= 2) continue;
+    hand.push(e.id);
+    perCat[e.cat] = (perCat[e.cat] ?? 0) + 1;
+    if (e.heavy) heavies++;
+  }
+  return hand;
+}
+
 // Quantize v ∈ [0,1] onto `levels` bands (posterize transfer curve).
 function posterizeCurve(v, levels) {
   const c = Math.min(1, Math.max(0, v));
@@ -367,7 +392,8 @@ const ringIndex = (head, back, size) => (((head - back) % size) + size) % size;
 
 globalThis.__logic = {
   spectralFlux, bandEnergy, adaptiveThreshold, stepOnset, estimateBpm, decayPulse,
-  FX_REGISTRY, mulberry32, latencyMs, stepGrid, gridEvents, sliceOffsets, wedgeAngles, posterizeCurve, ringIndex,
+  FX_REGISTRY, mulberry32, latencyMs, stepGrid, gridEvents, dealHand,
+  sliceOffsets, wedgeAngles, posterizeCurve, ringIndex,
 };
 })();
 </script>
