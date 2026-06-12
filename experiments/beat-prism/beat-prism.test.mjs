@@ -782,6 +782,97 @@ test('buildPassPlan: deterministic — identical input, deep-equal plan', () => 
   assert.deepEqual(buildPassPlan(input), buildPassPlan(input));
 });
 
+// ---------- webgl slice 2 — fold uniforms + geometry matrix ----------
+
+test('colorFoldUniforms: no live members → neutral transfer', () => {
+  const { colorFoldUniforms } = loadLogic(HTML);
+  const u = colorFoldUniforms([], {}, { bass: 0, treble: 0, tSec: 0, hueBase: 0 });
+  assert.deepEqual(u, { brightness: 1, saturation: 1, hue: 0, gray: 0,
+                        contrast: 1, invert: 0, flash: 0, levels: 0 });
+});
+
+test('colorFoldUniforms: bleach-burn and sat-pump combine multiplicatively', () => {
+  const { colorFoldUniforms } = loadLogic(HTML);
+  // bleach P=0.5 → brightness 1.75, sat ×0.625; sat-pump P=1 → sat ×3.6
+  const u = colorFoldUniforms(['bleach-burn', 'sat-pump'],
+    { 'bleach-burn': 0.5, 'sat-pump': 1 }, { bass: 0, treble: 0, tSec: 0, hueBase: 0 });
+  assert.ok(Math.abs(u.brightness - 1.75) < 1e-9);
+  assert.ok(Math.abs(u.saturation - 0.625 * 3.6) < 1e-9);
+});
+
+test('colorFoldUniforms: hue-spin adds the pulse kick onto the beat-stepped base', () => {
+  const { colorFoldUniforms } = loadLogic(HTML);
+  const u = colorFoldUniforms(['hue-spin'], { 'hue-spin': 0.5 },
+    { bass: 0, treble: 0, tSec: 0, hueBase: 120 });
+  assert.equal(u.hue, 120 + 22.5);
+});
+
+test('colorFoldUniforms: invert-strobe is a hard threshold at pulse 0.5', () => {
+  const { colorFoldUniforms } = loadLogic(HTML);
+  const ctx = { bass: 0, treble: 0, tSec: 0, hueBase: 0 };
+  assert.equal(colorFoldUniforms(['invert-strobe'], { 'invert-strobe': 0.4 }, ctx).invert, 0);
+  assert.equal(colorFoldUniforms(['invert-strobe'], { 'invert-strobe': 0.9 }, ctx).invert, 1);
+});
+
+test('colorFoldUniforms: color-drain and flash pass their pulses through', () => {
+  const { colorFoldUniforms } = loadLogic(HTML);
+  const u = colorFoldUniforms(['color-drain', 'flash'],
+    { 'color-drain': 0.7, flash: 0.5 }, { bass: 0, treble: 0, tSec: 0, hueBase: 0 });
+  assert.equal(u.gray, 0.7);
+  assert.ok(Math.abs(u.flash - 0.5 * 0.38) < 1e-9);
+});
+
+test('overlayFoldUniforms: neutral when nothing is live', () => {
+  const { overlayFoldUniforms } = loadLogic(HTML);
+  const u = overlayFoldUniforms([], {}, { treble: 0, tSec: 0, lbPos: 0 });
+  assert.deepEqual(u, { glow: 0, scanlines: 0, vhs: 0, grain: 0,
+                        vignette: 0, letterbox: 0, starburst: 0, shockwave: 0 });
+});
+
+test('overlayFoldUniforms: pulse members scale, letterbox follows eased position', () => {
+  const { overlayFoldUniforms } = loadLogic(HTML);
+  const u = overlayFoldUniforms(
+    ['grain-burst', 'vignette-pump', 'letterbox-snap'],
+    { 'grain-burst': 0.6, 'vignette-pump': 0.3 },
+    { treble: 0, tSec: 0, lbPos: 0.42 });
+  assert.ok(Math.abs(u.grain - 0.3) < 1e-9);      // P × 0.5
+  assert.equal(u.vignette, 0.3);
+  assert.equal(u.letterbox, 0.42);
+});
+
+test('geometryMatrix: nothing live → identity', () => {
+  const { geometryMatrix } = loadLogic(HTML);
+  assert.deepEqual(geometryMatrix({ pulses: {}, active: new Set(), joltDir: 1,
+                                    mirrorOn: false, shake: [0, 0] }),
+                   [1, 0, 0, 0, 1, 0, 0, 0, 1]);
+});
+
+test('geometryMatrix: zoom pulse scales about center', () => {
+  const { geometryMatrix } = loadLogic(HTML);
+  const m = geometryMatrix({ pulses: { zoom: 1 }, active: new Set(['zoom']),
+                             joltDir: 1, mirrorOn: false, shake: [0, 0] });
+  assert.ok(Math.abs(m[0] - 1.07) < 1e-9);
+  assert.ok(Math.abs(m[4] - 1.07) < 1e-9);
+});
+
+test('geometryMatrix: mirror flips x; shake lands in the translation slots', () => {
+  const { geometryMatrix } = loadLogic(HTML);
+  const m = geometryMatrix({ pulses: {}, active: new Set(['mirror-flip']),
+                             joltDir: 1, mirrorOn: true, shake: [0.02, -0.01] });
+  assert.equal(m[0], -1);
+  assert.ok(Math.abs(m[6] - 0.02) < 1e-9);
+  assert.ok(Math.abs(m[7] + 0.01) < 1e-9);
+});
+
+test('buildPassPlan: fold passes now carry synthesized uniforms; base carries the matrix', () => {
+  const { buildPassPlan } = loadLogic(HTML);
+  const plan = buildPassPlan(planInput({
+    active: new Set(['flash', 'zoom']), pulses: { flash: 1, zoom: 1 }, hueBase: 0,
+  }));
+  assert.ok(Math.abs(plan.find(p => p.id === 'color').uniforms.flash - 0.38) < 1e-9);
+  assert.ok(Math.abs(plan[0].uniforms.matrix[0] - 1.07) < 1e-9);
+});
+
 test('structure: perf panel exists and the app loop feeds it', () => {
   const html = readFileSync(HTML, 'utf8');
   assert.match(html, /id="perf"/, 'perf panel element');
