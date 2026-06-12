@@ -11,6 +11,9 @@
 | feedback texture | A persistent texture carrying last frame's output for temporal effects (echo trails, time smear, motion ghost, droste). |
 | sprite layer | Instanced-quad rendering for scene elements (particles, confetti, bolts, glyphs) drawn after the pass chain. |
 | glyph atlas | A small offscreen 2D canvas where glyph characters are rasterized once, uploaded as a texture for the sprite layer. (Atlas *generation* may use Canvas2D; all *rendering* is GL.) |
+| frame ring | The fixed-size circular buffer of recent output frames feeding freeze-frame and stutter-loop; becomes an array of GL textures (was an array of canvases). |
+| heavy | Registry flag (unchanged from the fx-pack design) marking effects that need an extra full-frame pass; the conductor still deals ≤ 2 per hand. |
+| active set | The effect ids currently rendering — the dealt hand under shuffle, the enabled pool when manual. Unchanged semantics from the fx-pack design. |
 
 ## Decisions
 
@@ -39,7 +42,9 @@
 **Rationale:** That layer is pure, tested (280 green), and orthogonal to how pixels are produced.
 
 ### Pass plan is pure, tested logic
-**Decision:** A new pure function in the `__logic` block — `buildPassPlan(activeSet, pulses, bands, timing)` → ordered `[{ id, program, uniforms }]` — encodes render order (geometry → color → temporal → overlay), pulse gating (skip passes whose pulse decayed below threshold), and color-pass folding (light color effects collapse into ONE shader pass with combined uniforms, replacing the old `ctx.filter` stack). Shader GLSL itself is exercised by structure tests only (compiles deferred to the browser).
+**Decision:** A new pure function in the `__logic` block with an explicit contract:
+`buildPassPlan(input)` where `input = { active: Set<effectId>, pulses: Record<effectId, number 0..1>, bass: number 0..1, treble: number 0..1, tSec: number, scheduled: { mirrorOn, tileN, lbOpen, frozen, stutterBack } }` → ordered `Array<{ id: effectId, program: programKey, uniforms: Record<string, number|number[]> }>`.
+It encodes render order (geometry → color → temporal → overlay), pulse gating (skip passes whose pulse decayed below threshold), and color-pass folding (light color effects collapse into ONE shader pass with combined uniforms, replacing the old `ctx.filter` stack). Shader GLSL itself is exercised by structure tests only (compiles deferred to the browser).
 **Rationale:** Mirrors the repo convention — DOM-free math in `__logic`, Node-tested; the pass plan is exactly the "tighter pipeline" and deserves the strongest tests.
 
 ### Acceptance: measured by the fps panel
