@@ -1110,6 +1110,23 @@ test('structure: instanced sprite layer, direct video upload, GL demo scene', ()
   assert.ok(app.includes('gl.LINES'), 'demo scene bars/prism as GL lines');
 });
 
+// ---------- webgl slice 9 — 2D pipeline removal ----------
+
+test('structure: the Canvas2D render pipeline is gone', () => {
+  const app = appScript();
+  assert.ok(!app.includes('function render('), 'old render() deleted');
+  assert.ok(!/\bctx\./.test(app), 'no main-canvas 2d usage left');
+  assert.ok(!app.includes('drawImage'), 'no 2D blits anywhere');
+  const gen2d = app.match(/getContext\('2d'\)/g) ?? [];
+  assert.equal(gen2d.length, 2, 'exactly noise + atlas generation use 2d canvases');
+});
+
+test('structure: save-png re-renders the unpreserved GL frame on demand', () => {
+  const app = appScript();
+  assert.ok(app.includes('toDataURL'), 'save still produces a PNG');
+  assert.ok(app.includes('lastPlan'), 'redraw-then-capture path exists');
+});
+
 // ---------- webgl slice 3 — GL skeleton (structural) ----------
 
 test('structure: main canvas runs WebGL2, not 2d', () => {
