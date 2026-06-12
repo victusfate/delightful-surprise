@@ -53,3 +53,11 @@
   AND ring depth; strobe-black keeps its even-frame parity via `frameNo`
   in the plan input. dropGlTemporal cleans ring+feedback on resize and
   forgets (without deleting) on context restore. 108 green.
+
+## Slice 7 — overlay pass
+- Status: done
+- Notes: all eight screen-space overlays in one shader; zero-valued
+  uniforms are no-ops so the fold costs one draw regardless of how many
+  are live. Noise tile (the existing generated canvas) uploads once as a
+  REPEAT texture on unit 2. lbPos easing stayed in the frame loop;
+  starburst/shockwave became analytic ray/ring functions. 110 green.

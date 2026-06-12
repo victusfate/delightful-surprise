@@ -2022,12 +2022,57 @@ uniform sampler2D uTex2;
 void main() {
   outColor = vec4(mix(texture(uTex, vUV).rgb, texture(uTex2, vUV).rgb, 0.9), 1.0);
 }`,
+
+  // ── overlay: all eight screen-space effects in one pass; zero-valued
+  // uniforms are no-ops so the fold costs one draw however many are live ──
+  overlay: `#version 300 es${FS_COMMON}
+uniform float uGlow, uScanlines, uVhs, uGrain, uVignette, uLetterbox, uStarburst, uShockwave;
+uniform sampler2D uNoise;
+void main() {
+  vec2 uv = vUV;
+  float yTop = (1.0 - vUV.y) * uRes.y;
+  // vhs band: rolling bright band, torn sideways, noisy
+  float bandY = mod(uT * 140.0, uRes.y + 120.0) - 60.0;
+  float inBand = uVhs * step(bandY, yTop) * step(yTop, bandY + 26.0);
+  if (inBand > 0.5) {
+    uv.x += (texture(uNoise, vec2(uT * 0.7, bandY / 128.0)).r - 0.5) * 18.0 / uRes.x;
+  }
+  vec3 c = texture(uTex, clamp(uv, 0.0, 1.0)).rgb;
+  if (inBand > 0.5) {
+    c += 0.1 * vec3(0.81, 0.92, 1.0);
+    c += texture(uNoise, vec2(vUV.x * uRes.x, mod(uT * 700.0, 100.0)) / 128.0).r * 0.2;
+  }
+  c += (texture(uNoise, vUV * uRes / 128.0 + vec2(uT * 9.7, uT * 5.3)).r) * uGrain * 0.6;
+  c *= 1.0 - uScanlines * 0.5 * step(2.0, mod(yTop, 4.0));
+  // edge glow rides the treble, hue drifting like the 2D border
+  float edge = min(min(vUV.x, 1.0 - vUV.x) * uRes.x, min(vUV.y, 1.0 - vUV.y) * uRes.y);
+  c += (0.5 + 0.5 * cos(uT * 0.9 + vec3(0.0, 2.1, 4.2))) * uGlow * smoothstep(26.0, 0.0, edge);
+  float m2 = min(uRes.x, uRes.y);
+  float r = length((vUV - 0.5) * uRes) / m2;
+  if (uVignette > 0.001) {
+    c *= 1.0 - smoothstep(0.62 - uVignette * 0.25, 0.95, r) * (0.55 + uVignette * 0.4);
+  }
+  if (uStarburst > 0.001) {
+    float a = atan((vUV.y - 0.5) * uRes.y, (vUV.x - 0.5) * uRes.x);
+    float rays = pow(abs(cos(a * 6.0 + uT * 0.35)), 48.0);
+    float reach = smoothstep(0.08 + uStarburst * 0.55, 0.04, r);
+    c += vec3(0.92, 1.0, 1.0) * uStarburst * rays * reach * smoothstep(0.02, 0.06, r);
+  }
+  if (uShockwave > 0.001) {
+    float R = 0.04 + (1.0 - uShockwave) * 0.65;       // expands as it fades
+    float ring = exp(-pow((r - R) * m2 / (3.0 + uShockwave * 9.0), 2.0));
+    c += vec3(0.59, 0.94, 1.0) * uShockwave * ring;
+  }
+  float bh = 0.13 * uLetterbox;
+  if (vUV.y < bh || vUV.y > 1.0 - bh) c = vec3(0.0);
+  outColor = vec4(c, 1.0);
+}`,
 };
 
 const IDENTITY3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 let gl = null, glLost = false;
 const glPrograms = new Map();
-let quadVao = null, srcTex = null, pingT = null, pongT = null;
+let quadVao = null, srcTex = null, pingT = null, pongT = null, glNoiseTex = null;
 
 function glCompile(key) {
   const fsSrc = SHADERS[key];
@@ -2111,6 +2156,11 @@ function glInit() {
   gl.enableVertexAttribArray(0);
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
   srcTex = mkTex();
+  // static noise tile, uploaded once, tiling — feeds the overlay pass
+  glNoiseTex = mkTex();
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, noiseCv);
   glSizeDirty = true;
   return true;
 }
@@ -2175,6 +2225,12 @@ function glRender(plan, tSec, nowMs) {
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, tex2);
       gl.uniform1i(gl.getUniformLocation(prog, 'uTex2'), 1);
+      gl.activeTexture(gl.TEXTURE0);
+    }
+    if (pass.id === 'overlay') {
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, glNoiseTex);
+      gl.uniform1i(gl.getUniformLocation(prog, 'uNoise'), 2);
       gl.activeTexture(gl.TEXTURE0);
     }
     gl.clearColor(0, 0, 0, 1);
