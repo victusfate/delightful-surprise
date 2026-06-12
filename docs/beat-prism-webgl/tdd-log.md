@@ -42,3 +42,14 @@
   the emphasis: real RGB-split chroma, true channel rotation, palette
   thermal, edge-difference neon. `SOLO_UNIFORMS` synthesizers; chroma
   pass omitted when bass-driven split is sub-pixel. 104 green.
+
+## Slice 6 — temporal passes
+- Status: done
+- Notes: feedback textures captured per-pass via copyTexSubImage2D (ghost
+  on its 120 ms cadence); frame ring is now GL textures with the same
+  capture-pause-while-frozen semantics; frozen state collapses the whole
+  plan to one `freeze` pass reading the held ring frame (app only raises
+  `frozen` once the ring has content). Stutter gating needs pulse > 0.2
+  AND ring depth; strobe-black keeps its even-frame parity via `frameNo`
+  in the plan input. dropGlTemporal cleans ring+feedback on resize and
+  forgets (without deleting) on context restore. 108 green.

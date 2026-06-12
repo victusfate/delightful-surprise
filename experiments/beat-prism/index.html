@@ -499,6 +499,14 @@ const OVERLAY_FOLD = ['glow', 'scanlines', 'vhs-band', 'grain-burst',
 function passLive(effect, input) {
   if (!input.active.has(effect.id)) return false;
   if (effect.id === 'chroma') return input.bass * 30 > 0.6;
+  if (effect.id === 'freeze-frame') return false;   // manifests as the frozen collapse
+  if (effect.id === 'stutter-loop') {
+    return (input.pulses['stutter-loop'] ?? 0) > 0.2
+        && (input.scheduled?.stutterBack ?? 0) >= 1;
+  }
+  if (effect.id === 'strobe-black') {
+    return (input.pulses['strobe-black'] ?? 0) > 0.25 && (input.frameNo ?? 0) % 2 === 0;
+  }
   if (effect.kind === 'pulse') return (input.pulses[effect.id] ?? 0) > PASS_GATE;
   return true;
 }
@@ -508,6 +516,8 @@ function passLive(effect, input) {
 const SOLO_UNIFORMS = {
   'channel-swap': input => ({ mix: Math.min(1, (input.pulses['channel-swap'] ?? 0) * 1.2) }),
   chroma: input => ({ amount: input.bass * 30 }),
+  'stutter-loop': input => ({ back: input.scheduled?.stutterBack ?? 0 }),
+  'strobe-black': input => ({ strobe: Math.min(1, (input.pulses['strobe-black'] ?? 0) * 1.5) }),
 };
 
 // Combined transfer-curve uniforms for the single folded color pass —
@@ -597,10 +607,15 @@ function geometryMatrix({ pulses, active, joltDir, mirrorOn, shake }) {
 
 // Ordered pass list from frame state. Pure and deterministic — registry
 // order within each section. input: { active: Set<id>, pulses: {id→0..1},
-// bass, treble: 0..1, tSec, hueBase, joltDir, sliceSeed, shake: [x,y],
-// scheduled: { mirrorOn, tileN, lbOpen, lbPos, frozen, stutterBack } }.
+// bass, treble: 0..1, tSec, hueBase, joltDir, sliceSeed, frameNo,
+// shake: [x,y], scheduled: { mirrorOn, tileN, lbOpen, lbPos, frozen,
+// stutterBack } }.
 // Returns [{ id, program, uniforms, members? }].
 function buildPassPlan(input) {
+  // a frozen hold replaces the whole chain with the held ring frame
+  if (input.scheduled?.frozen && input.active.has('freeze-frame')) {
+    return [{ id: 'freeze-frame', program: 'freeze', uniforms: {} }];
+  }
   const live = id => {
     const e = FX_REGISTRY.find(f => f.id === id);
     return e ? passLive(e, input) : false;
@@ -767,7 +782,7 @@ function resize() {
   src.width = W; src.height = H;
   for (const c of [fb, sm, gh, dr]) { c.width = W; c.height = H; }
   fbFresh = smFresh = ghFresh = drFresh = false;
-  ring = null; ringFill = 0;                  // sizes changed — drop the frame ring
+  dropGlTemporal(true);                       // sizes changed — drop ring + feedback
   glSizeDirty = true;                         // ping-pong targets realloc next frame
 }
 window.addEventListener('resize', resize);
@@ -1941,6 +1956,72 @@ void main() {
   c.b = texture(uTex, clamp(vUV - vec2(dx, 0.0), 0.0, 1.0)).b;
   outColor = vec4(c, 1.0);                          // true RGB split
 }`,
+
+  // ── temporal: uTex2 carries last frame's captured output / ring frames ──
+  'echo-trails': `#version 300 es${FS_COMMON}
+uniform sampler2D uTex2;
+void main() {
+  vec3 c = texture(uTex, vUV).rgb;
+  vec2 z = (vUV - 0.5) * (1.0 - 14.0 / uRes.y) + 0.5;   // slight outward zoom
+  c += texture(uTex2, z).rgb * 0.42;
+  outColor = vec4(c, 1.0);
+}`,
+
+  'time-smear': `#version 300 es${FS_COMMON}
+uniform sampler2D uTex2;
+void main() {
+  vec2 d = 4.0 / uRes;
+  vec3 f = (texture(uTex2, vUV + vec2(d.x, 0.0)) + texture(uTex2, vUV - vec2(d.x, 0.0))
+          + texture(uTex2, vUV + vec2(0.0, d.y)) + texture(uTex2, vUV - vec2(0.0, d.y))).rgb * 0.25;
+  outColor = vec4(mix(texture(uTex, vUV).rgb, f, 0.55), 1.0);
+}`,
+
+  'motion-ghost': `#version 300 es${FS_COMMON}
+uniform sampler2D uTex2;
+void main() {
+  vec2 drift = vec2(sin(uT * 2.3) * 10.0 / uRes.x, 0.0);
+  vec3 c = texture(uTex, vUV).rgb + texture(uTex2, clamp(vUV + drift, 0.0, 1.0)).rgb * 0.32;
+  outColor = vec4(c, 1.0);
+}`,
+
+  droste: `#version 300 es${FS_COMMON}
+uniform sampler2D uTex2;
+void main() {
+  vec3 c = texture(uTex, vUV).rgb;
+  vec2 d = (vUV - 0.5) / 0.62 + 0.5;                    // last frame nested in
+  if (all(greaterThanEqual(d, vec2(0.0))) && all(lessThanEqual(d, vec2(1.0)))) {
+    c = mix(c, texture(uTex2, d).rgb, 0.92);
+  }
+  outColor = vec4(c, 1.0);
+}`,
+
+  'strobe-black': `#version 300 es${FS_COMMON}
+uniform float uStrobe;
+void main() {
+  outColor = vec4(texture(uTex, vUV).rgb * (1.0 - uStrobe), 1.0);
+}`,
+
+  'interlace-roll': `#version 300 es${FS_COMMON}
+void main() {
+  float bh = 8.0;
+  float band = mod(vUV.y * uRes.y - mod(uT * 90.0, bh * 2.0), bh * 2.0);
+  vec3 c = texture(uTex, vUV).rgb;
+  if (band < bh) {                                      // every other band, torn
+    float j = (5.0 + sin(uT * 3.1) * 4.0) / uRes.x;
+    vec3 torn = texture(uTex, clamp(vUV - vec2(j, 0.0), 0.0, 1.0)).rgb;
+    c = mix(c, torn, 0.85);
+  }
+  outColor = vec4(c, 1.0);
+}`,
+
+  freeze: `#version 300 es${FS_COMMON}
+void main() { outColor = vec4(texture(uTex, vUV).rgb, 1.0); }`,
+
+  'stutter-loop': `#version 300 es${FS_COMMON}
+uniform sampler2D uTex2;
+void main() {
+  outColor = vec4(mix(texture(uTex, vUV).rgb, texture(uTex2, vUV).rgb, 0.9), 1.0);
+}`,
 };
 
 const IDENTITY3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
@@ -1993,6 +2074,27 @@ function mkTarget() {
   return { tex, fbo };
 }
 
+// temporal state textures: per-effect feedback + the frame ring
+const FEEDBACK_IDS = new Set(['echo-trails', 'time-smear', 'motion-ghost', 'droste']);
+const glFeedback = new Map();
+function glSizedTex() {
+  const t = mkTex();
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  return t;
+}
+const feedbackTex = id => {
+  if (!glFeedback.has(id)) glFeedback.set(id, glSizedTex());
+  return glFeedback.get(id);
+};
+function dropGlTemporal(deleteTex) {
+  if (deleteTex && gl) {
+    for (const t of glFeedback.values()) gl.deleteTexture(t);
+    if (ring) for (const t of ring) if (t) gl.deleteTexture(t);
+  }
+  glFeedback.clear();
+  ring = null; ringHead = -1; ringFill = 0;
+}
+
 function glInit() {
   gl = canvas.getContext('webgl2', { alpha: false, antialias: false });
   if (!gl) {
@@ -2000,6 +2102,7 @@ function glInit() {
     return false;
   }
   glPrograms.clear();
+  dropGlTemporal(false);    // context objects are gone — forget, don't delete
   quadVao = gl.createVertexArray();
   gl.bindVertexArray(quadVao);
   const vb = gl.createBuffer();
@@ -2029,7 +2132,7 @@ function setUniforms(prog, uniforms) {
 // Execute the pass plan: source texture → ping-pong chain → screen.
 // The src 2D canvas (video letterbox or demo scene) is the upload source;
 // the video never hits GL at full 4K — passes run at canvas resolution.
-function glRender(plan, tSec) {
+function glRender(plan, tSec, nowMs) {
   if (!gl || glLost || gl.isContextLost()) return;
   if (glSizeDirty) {
     for (const t of [pingT, pongT]) {
@@ -2051,7 +2154,9 @@ function glRender(plan, tSec) {
     const prog = glProgram(pass.program);
     gl.useProgram(prog);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, readTex);
+    // the frozen collapse reads the held ring frame instead of the chain
+    const read = pass.id === 'freeze-frame' ? (ring?.[ringHead] ?? readTex) : readTex;
+    gl.bindTexture(gl.TEXTURE_2D, read);
     gl.uniform1i(gl.getUniformLocation(prog, 'uTex'), 0);
     const mLoc = gl.getUniformLocation(prog, 'uMatrix');
     if (mLoc) gl.uniformMatrix3fv(mLoc, false, pass.uniforms.matrix ?? IDENTITY3);
@@ -2060,11 +2165,46 @@ function glRender(plan, tSec) {
     const tLoc = gl.getUniformLocation(prog, 'uT');
     if (tLoc) gl.uniform1f(tLoc, tSec ?? 0);
     setUniforms(prog, pass.uniforms);
+    // second sampler: per-effect feedback, or the ring frame to replay
+    let tex2 = null;
+    if (FEEDBACK_IDS.has(pass.id)) tex2 = feedbackTex(pass.id);
+    else if (pass.id === 'stutter-loop') {
+      tex2 = ring?.[ringIndex(ringHead, pass.uniforms.back, RING_SIZE)] ?? read;
+    }
+    if (tex2) {
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, tex2);
+      gl.uniform1i(gl.getUniformLocation(prog, 'uTex2'), 1);
+      gl.activeTexture(gl.TEXTURE0);
+    }
     gl.clearColor(0, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    // capture this pass's output for next frame (ghost on a 120 ms cadence)
+    if (FEEDBACK_IDS.has(pass.id)
+        && (pass.id !== 'motion-ghost' || nowMs - ghStamp > 120)) {
+      gl.bindTexture(gl.TEXTURE_2D, feedbackTex(pass.id));
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, W, H);
+      if (pass.id === 'motion-ghost') ghStamp = nowMs;
+    }
     if (target) readTex = target.tex;
   });
+  // frame ring — capture the finished frame while freeze/stutter live;
+  // capture pauses during the hold, exactly like the 2D ring
+  if (A('freeze-frame') || A('stutter-loop')) {
+    if (!ring) { ring = new Array(RING_SIZE).fill(null); ringHead = -1; ringFill = 0; }
+    if (!(A('freeze-frame') && nowMs < freezeUntil)) {
+      ringHead = (ringHead + 1) % RING_SIZE;
+      const tex = ring[ringHead] ?? (ring[ringHead] = glSizedTex());
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, W, H);
+      ringFill = Math.min(RING_SIZE, ringFill + 1);
+    }
+  } else if (ring) {
+    for (const t of ring) if (t) gl.deleteTexture(t);
+    ring = null; ringFill = 0;
+  }
 }
 const glOk = glInit();
 
@@ -2165,12 +2305,13 @@ function frame(ms) {
   const shakeAng = rand(0, TAU);
   const plan = buildPassPlan({
     active: activeSet, pulses, bass: bassS, treble: trebleS, tSec: ms / 1000,
-    hueBase, joltDir, sliceSeed,
+    hueBase, joltDir, sliceSeed, frameNo,
     shake: [Math.cos(shakeAng) * shakeAmt / (W / 2), Math.sin(shakeAng) * shakeAmt / (H / 2)],
     scheduled: { mirrorOn, tileN, lbOpen, lbPos,
-                 frozen: ms < freezeUntil && A('freeze-frame'), stutterBack: 0 },
+                 frozen: ms < freezeUntil && A('freeze-frame') && ringFill > 0,
+                 stutterBack: ringFill >= 6 ? 1 + ((ms / 50) | 0) % 5 : 0 },
   });
-  glRender(plan, ms / 1000);
+  glRender(plan, ms / 1000, ms);
   for (const key of Object.keys(pulses)) {
     pulses[key] = decayPulse(pulses[key], dt * 1000, HALF_LIFE[key] ?? 150);
   }
