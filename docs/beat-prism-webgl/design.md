@@ -37,6 +37,11 @@
 **Rationale:** The validated feel is the contract; 2D quirks (shadowBlur cost, filter-stack rounding) are implementation details not worth mimicking.
 **Alternatives considered:** Pixel-faithful first (slower, mimics 2D artifacts); free redesign (look drift risk).
 
+### Upgrade emphasis: color and perceptual bending over screen shakes
+**Decision:** Within the "same vibe, GL-native" parity bar, the shader-quality upgrade budget concentrates on color and perceptual-bending effects (hue-spin, duotone, thermal, posterize, kaleidoscope, droste, time-smear, neon-edge, chroma). Shake-style geometry pulses (shake, rotate-jolt, squash, skew-tilt) port at their current subtle amplitudes — no amplification, no extra effort beyond parity.
+**Rationale:** User direction during planning: "focus more on the color and perceptual bending vs screen shakes."
+**Alternatives considered:** Biasing the conductor's hand-dealing toward color/perceptual effects — a behavior change beyond the port, left as a possible follow-up.
+
 ### What does not change
 **Decision:** The detection/beat layer is untouched: `__logic` block (flux, onset, BPM, grid, conductor, registry), HUD/drawer/transport DOM, keyboard map, fps diagnostics panel, audio graph. `FX_REGISTRY` stays the canonical effect list; the conductor still deals hands from it.
 **Rationale:** That layer is pure, tested (280 green), and orthogonal to how pixels are produced.
@@ -90,3 +95,6 @@ flowchart LR
 
 **Q:** What's the visual parity bar for the ported effects?
 **A:** Same vibe, GL-native — keep identity and trigger semantics, allow shader-quality upgrades, no pixel-exactness.
+
+**Q:** Where should the upgrade effort go?
+**A:** Color and perceptual bending over screen shakes — richer shaders for the color/warp families; shake-style pulses stay subtle parity.
