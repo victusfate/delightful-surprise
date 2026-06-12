@@ -663,6 +663,48 @@ function buildPassPlan(input) {
   ];
 }
 
+// hsl → rgb (h in degrees, s/l in 0..1) — the sprite layer's replacement
+// for the 2D pipeline's hsl() fillStyle strings.
+function hslToRgb(h, s, l) {
+  const k = n => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return [f(0), f(8), f(4)];
+}
+
+// Flatten scene elements into instanced-sprite buffers. Stride 10:
+// [cx, cy, w, h, rot, r, g, b, alpha, cell]. `add` draws additive
+// (burst glow, bolts, glyphs — the 2D 'lighter' group), `norm` draws
+// with normal alpha (confetti). Cells: 0 soft circle, 1 solid rect,
+// 2 soft bar, 3+ glyph atlas cells. Pure.
+function packSprites(particles, bolts, glyphs) {
+  const add = [], norm = [];
+  for (const p of particles) {
+    const f = 1 - p.age / p.life;
+    if (p.kind === 'confetti') {
+      const [r, g, b] = hslToRgb(p.hue, 0.95, 0.62);
+      norm.push(p.x, p.y, p.r * 2, p.r * 1.1, p.rot, r, g, b, Math.min(1, f * 1.6), 1);
+    } else {
+      const [r, g, b] = hslToRgb(p.hue, 1, 0.65);
+      add.push(p.x, p.y, p.r * (0.5 + f) * 6, p.r * (0.5 + f) * 6, 0, r, g, b, f * 0.9, 0);
+    }
+  }
+  for (const bolt of bolts) {
+    const f = 1 - bolt.age / bolt.life;
+    for (const [x1, y1, x2, y2] of bolt.segs) {
+      const len = Math.hypot(x2 - x1, y2 - y1);
+      add.push((x1 + x2) / 2, (y1 + y2) / 2, len + 8, 14,
+               Math.atan2(y2 - y1, x2 - x1), 0.92, 0.96, 1, f, 2);
+    }
+  }
+  for (const g of glyphs) {
+    const f = 1 - g.age / g.life, pop = 1.35 - f * 0.35;
+    const [r, gg, b] = hslToRgb(g.hue, 1, 0.7);
+    add.push(g.x, g.y, g.size * pop, g.size * pop, 0, r, gg, b, f, 3 + g.ci);
+  }
+  return { add, norm };
+}
+
 // ──────────────── fps diagnostics ────────────────
 
 // Standard display refresh periods. The best sustained frame interval
@@ -725,6 +767,7 @@ globalThis.__logic = {
   sliceOffsets, wedgeAngles, posterizeCurve, ringIndex, formatTime, seekTarget,
   snapRefreshMs, missedVsync, frameStats,
   buildPassPlan, colorFoldUniforms, overlayFoldUniforms, geometryMatrix, mat3mul,
+  hslToRgb, packSprites,
 };
 })();
 </script>
@@ -1124,8 +1167,9 @@ const glyphs = [], GLYPH_SET = '◆▲●✦✸✚♦◢';
 function spawnGlyphs() {
   const n = 1 + ((Math.random() * 3) | 0);
   for (let i = 0; i < n; i++) {
+    const ci = (Math.random() * GLYPH_SET.length) | 0;
     glyphs.push({
-      ch: GLYPH_SET[(Math.random() * GLYPH_SET.length) | 0],
+      ch: GLYPH_SET[ci], ci,
       x: rand(W * 0.15, W * 0.85), y: rand(H * 0.2, H * 0.8),
       size: rand(42, 115), life: rand(0.4, 0.7), age: 0,
       hue: [305, 185, 262][(Math.random() * 3) | 0],
@@ -1825,16 +1869,24 @@ uniform sampler2D uTex;
 uniform vec2 uRes;
 uniform float uT;
 uniform float uBlock;
+uniform vec2 uFit;
 const float TAU = 6.28318530718;
 vec2 pixelUV(vec2 uv) {
   if (uBlock < 0.5) return uv;
   vec2 g = uRes / uBlock;
   return (floor(uv * g) + 0.5) / g;
+}
+// aspect-fit sampling for the base family: video letterboxing happens
+// here (uFit > 1 → bars), not in a 2D canvas relay
+vec4 srcTexAt(vec2 uv) {
+  vec2 f = (uv - 0.5) * uFit + 0.5;
+  if (f.x < 0.0 || f.x > 1.0 || f.y < 0.0 || f.y > 1.0) return vec4(0.0, 0.0, 0.0, 1.0);
+  return texture(uTex, f);
 }`;
 
 const SHADERS = {
   base: `#version 300 es${FS_COMMON}
-void main() { outColor = vec4(texture(uTex, pixelUV(vUV)).rgb, 1.0); }`,
+void main() { outColor = vec4(srcTexAt(pixelUV(vUV)).rgb, 1.0); }`,
 
   // true polar kaleidoscope — aspect-corrected, mirrored alternate wedges,
   // slow drift (GL-native upgrade over the 2D clipped-wedge approximation)
@@ -1850,12 +1902,12 @@ void main() {
   a = abs(a - w);
   vec2 uv = vec2(cos(a), sin(a)) * r;
   uv.x *= uRes.y / uRes.x;
-  outColor = vec4(texture(uTex, pixelUV(clamp(uv + 0.5, 0.0, 1.0))).rgb, 1.0);
+  outColor = vec4(srcTexAt(pixelUV(clamp(uv + 0.5, 0.0, 1.0))).rgb, 1.0);
 }`,
 
   tile: `#version 300 es${FS_COMMON}
 uniform float uTiles;
-void main() { outColor = vec4(texture(uTex, pixelUV(fract(vUV * uTiles))).rgb, 1.0); }`,
+void main() { outColor = vec4(srcTexAt(pixelUV(fract(vUV * uTiles))).rgb, 1.0); }`,
 
   slice: `#version 300 es${FS_COMMON}
 uniform float uOffsets[14];
@@ -1863,7 +1915,7 @@ void main() {
   int i = int(floor((1.0 - vUV.y) * 14.0));
   vec2 uv = vUV;
   uv.x -= uOffsets[clamp(i, 0, 13)] / uRes.x;
-  outColor = vec4(texture(uTex, pixelUV(clamp(uv, 0.0, 1.0))).rgb, 1.0);
+  outColor = vec4(srcTexAt(pixelUV(clamp(uv, 0.0, 1.0))).rgb, 1.0);
 }`,
 
   vslice: `#version 300 es${FS_COMMON}
@@ -1872,7 +1924,7 @@ void main() {
   int i = int(floor(vUV.x * 14.0));
   vec2 uv = vUV;
   uv.y += uOffsets[clamp(i, 0, 13)] / uRes.y;
-  outColor = vec4(texture(uTex, pixelUV(clamp(uv, 0.0, 1.0))).rgb, 1.0);
+  outColor = vec4(srcTexAt(pixelUV(clamp(uv, 0.0, 1.0))).rgb, 1.0);
 }`,
 
   // ── color: the folded transfer pass + heavy programs ──
@@ -2067,36 +2119,125 @@ void main() {
   if (vUV.y < bh || vUV.y > 1.0 - bh) c = vec3(0.0);
   outColor = vec4(c, 1.0);
 }`,
+
+  // demo-scene background: the old radial gradient, now a quad pass
+  demobg: `#version 300 es${FS_COMMON}
+void main() {
+  float m2 = min(uRes.x, uRes.y);
+  float r = length((vUV - 0.5) * uRes) / (m2 * 0.75);
+  outColor = vec4(mix(vec3(0.043, 0.016, 0.094), vec3(0.0), clamp(r, 0.0, 1.0)), 1.0);
+}`,
 };
+
+// ── sprite layer: instanced quads over the finished frame ──
+// instance stride 10 floats: cx, cy, w, h, rot, r, g, b, alpha, cell
+const SPRITE_VS = `#version 300 es
+layout(location=0) in vec2 aCorner;
+layout(location=1) in vec4 aPosSize;
+layout(location=2) in float aRot;
+layout(location=3) in vec4 aColorA;
+layout(location=4) in float aCell;
+uniform vec2 uRes;
+uniform float uCells;
+out vec2 vCellUV; out vec4 vColor;
+void main() {
+  vec2 corner = aCorner * 0.5;
+  float cr = cos(aRot), sr = sin(aRot);
+  vec2 off = vec2(corner.x * aPosSize.z, corner.y * aPosSize.w);
+  off = vec2(off.x * cr - off.y * sr, off.x * sr + off.y * cr);
+  vec2 px = aPosSize.xy + off;
+  gl_Position = vec4(px.x / uRes.x * 2.0 - 1.0, 1.0 - px.y / uRes.y * 2.0, 0.0, 1.0);
+  vCellUV = vec2((aCell + corner.x + 0.5) / uCells, corner.y + 0.5);
+  vColor = aColorA;
+}`;
+const SPRITE_FS = `#version 300 es
+precision highp float;
+in vec2 vCellUV; in vec4 vColor; out vec4 outColor;
+uniform sampler2D uAtlas;
+void main() {
+  float a = texture(uAtlas, vCellUV).a;
+  outColor = vec4(vColor.rgb * a * vColor.a, vColor.a * a);   // premultiplied
+}`;
+
+const LINE_VS = `#version 300 es
+layout(location=0) in vec2 aPos;
+layout(location=1) in vec4 aColor;
+uniform vec2 uRes;
+out vec4 vColor;
+void main() {
+  gl_Position = vec4(aPos.x / uRes.x * 2.0 - 1.0, 1.0 - aPos.y / uRes.y * 2.0, 0.0, 1.0);
+  vColor = aColor;
+}`;
+const LINE_FS = `#version 300 es
+precision highp float;
+in vec4 vColor; out vec4 outColor;
+void main() { outColor = vColor; }`;
+
+// sprite atlas — rasterized ONCE at startup (generation-only 2D canvas,
+// per design.md); cells: 0 soft circle, 1 solid rect, 2 soft bar, 3+ glyphs
+const ATLAS_CELLS = 3 + GLYPH_SET.length, ATLAS_CELL = 64;
+const atlasCv = document.createElement('canvas');
+atlasCv.width = ATLAS_CELLS * ATLAS_CELL;
+atlasCv.height = ATLAS_CELL;
+{
+  const a = atlasCv.getContext('2d');
+  const g0 = a.createRadialGradient(32, 32, 0, 32, 32, 30);
+  g0.addColorStop(0, 'rgba(255,255,255,1)');
+  g0.addColorStop(0.35, 'rgba(255,255,255,.85)');
+  g0.addColorStop(1, 'rgba(255,255,255,0)');
+  a.fillStyle = g0;
+  a.fillRect(0, 0, 64, 64);
+  a.fillStyle = '#fff';
+  a.fillRect(64 + 4, 4, 56, 56);
+  const g2 = a.createLinearGradient(0, 20, 0, 44);
+  g2.addColorStop(0, 'rgba(255,255,255,0)');
+  g2.addColorStop(0.5, 'rgba(255,255,255,1)');
+  g2.addColorStop(1, 'rgba(255,255,255,0)');
+  a.fillStyle = g2;
+  a.fillRect(130, 20, 60, 24);
+  a.font = '48px ui-monospace, Menlo, Consolas, monospace';
+  a.textAlign = 'center';
+  a.textBaseline = 'middle';
+  a.fillStyle = '#fff';
+  for (let i = 0; i < GLYPH_SET.length; i++) {
+    a.fillText(GLYPH_SET[i], (3 + i) * 64 + 32, 34);
+  }
+}
 
 const IDENTITY3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 let gl = null, glLost = false;
 const glPrograms = new Map();
 let quadVao = null, srcTex = null, pingT = null, pongT = null, glNoiseTex = null;
+let srcT = null, glAtlasTex = null, spriteVao = null, spriteVB = null;
+let lineVao = null, lineVB = null;
 
-function glCompile(key) {
-  const fsSrc = SHADERS[key];
-  if (!fsSrc) return null;
+function compileProgram(vsSrc, fsSrc, label) {
   const sh = (type, src) => {
     const s = gl.createShader(type);
     gl.shaderSource(s, src);
     gl.compileShader(s);
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-      throw new Error(`${key}: ${gl.getShaderInfoLog(s)}`);
+      throw new Error(`${label}: ${gl.getShaderInfoLog(s)}`);
     }
     return s;
   };
   const p = gl.createProgram();
-  gl.attachShader(p, sh(gl.VERTEX_SHADER, QUAD_VS));
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, vsSrc));
   gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fsSrc));
   gl.linkProgram(p);
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
-    throw new Error(`${key}: ${gl.getProgramInfoLog(p)}`);
+    throw new Error(`${label}: ${gl.getProgramInfoLog(p)}`);
   }
   return p;
 }
 const glProgram = key => {
-  if (!glPrograms.has(key)) glPrograms.set(key, glCompile(key));
+  if (!glPrograms.has(key)) {
+    glPrograms.set(key, SHADERS[key] ? compileProgram(QUAD_VS, SHADERS[key], key) : null);
+  }
+  return glPrograms.get(key);
+};
+const glProgramRaw = (key, vs, fs) => {
+  if (!glPrograms.has(key)) glPrograms.set(key, compileProgram(vs, fs, key));
   return glPrograms.get(key);
 };
 
@@ -2161,6 +2302,33 @@ function glInit() {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, noiseCv);
+  // sprite atlas, uploaded once
+  glAtlasTex = mkTex();
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlasCv);
+  // sprite VAO: shared quad corners + one interleaved instance buffer
+  spriteVao = gl.createVertexArray();
+  gl.bindVertexArray(spriteVao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  spriteVB = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, spriteVB);
+  const S = 40;   // 10 floats per instance
+  for (const [loc, size, off] of [[1, 4, 0], [2, 1, 16], [3, 4, 20], [4, 1, 36]]) {
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, size, gl.FLOAT, false, S, off);
+    gl.vertexAttribDivisor(loc, 1);
+  }
+  // line VAO: interleaved x, y, r, g, b, a
+  lineVao = gl.createVertexArray();
+  gl.bindVertexArray(lineVao);
+  lineVB = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, lineVB);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 24, 0);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 24, 8);
   glSizeDirty = true;
   return true;
 }
@@ -2180,22 +2348,32 @@ function setUniforms(prog, uniforms) {
 }
 
 // Execute the pass plan: source texture → ping-pong chain → screen.
-// The src 2D canvas (video letterbox or demo scene) is the upload source;
-// the video never hits GL at full 4K — passes run at canvas resolution.
+// Video mode uploads the element straight to GL (letterboxing happens in
+// srcTexAt via uFit); demo mode renders the scene into the srcT target.
+// Either way, the chain's passes run at canvas resolution.
 function glRender(plan, tSec, nowMs) {
   if (!gl || glLost || gl.isContextLost()) return;
   if (glSizeDirty) {
-    for (const t of [pingT, pongT]) {
+    for (const t of [pingT, pongT, srcT]) {
       if (t) { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fbo); }
     }
-    pingT = mkTarget(); pongT = mkTarget();
+    pingT = mkTarget(); pongT = mkTarget(); srcT = mkTarget();
     glSizeDirty = false;
   }
-  gl.bindTexture(gl.TEXTURE_2D, srcTex);
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+  let readTex, fit = [1, 1];
+  if (mode === 'video' && video.readyState >= 2 && video.videoWidth) {
+    gl.bindTexture(gl.TEXTURE_2D, srcTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    const sc = Math.min(W / video.videoWidth, H / video.videoHeight);
+    fit = [W / (video.videoWidth * sc), H / (video.videoHeight * sc)];
+    readTex = srcTex;
+  } else {
+    glDemoScene(tSec);
+    readTex = srcT.tex;
+  }
   const passes = plan.filter(p => SHADERS[p.program]);
-  let readTex = srcTex;
   gl.bindVertexArray(quadVao);
   gl.viewport(0, 0, W, H);
   passes.forEach((pass, i) => {
@@ -2214,6 +2392,10 @@ function glRender(plan, tSec, nowMs) {
     if (rLoc) gl.uniform2f(rLoc, W, H);
     const tLoc = gl.getUniformLocation(prog, 'uT');
     if (tLoc) gl.uniform1f(tLoc, tSec ?? 0);
+    const fLoc = gl.getUniformLocation(prog, 'uFit');
+    if (fLoc) {            // only the first pass letterboxes the raw source
+      gl.uniform2f(fLoc, i === 0 ? fit[0] : 1, i === 0 ? fit[1] : 1);
+    }
     setUniforms(prog, pass.uniforms);
     // second sampler: per-effect feedback, or the ring frame to replay
     let tex2 = null;
@@ -2261,6 +2443,97 @@ function glRender(plan, tSec, nowMs) {
     for (const t of ring) if (t) gl.deleteTexture(t);
     ring = null; ringFill = 0;
   }
+}
+
+// Instanced sprite draw: `norm` with premultiplied alpha (confetti),
+// `add` additive (the 2D 'lighter' group). fbo null → over the screen.
+function glSprites(add, norm, fbo = null) {
+  if (!add.length && !norm.length) return;
+  const prog = glProgramRaw('_sprite', SPRITE_VS, SPRITE_FS);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.viewport(0, 0, W, H);
+  gl.useProgram(prog);
+  gl.uniform2f(gl.getUniformLocation(prog, 'uRes'), W, H);
+  gl.uniform1f(gl.getUniformLocation(prog, 'uCells'), ATLAS_CELLS);
+  gl.activeTexture(gl.TEXTURE3);
+  gl.bindTexture(gl.TEXTURE_2D, glAtlasTex);
+  gl.uniform1i(gl.getUniformLocation(prog, 'uAtlas'), 3);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindVertexArray(spriteVao);
+  gl.enable(gl.BLEND);
+  const group = (arr, sf, df) => {
+    if (!arr.length) return;
+    gl.blendFunc(sf, df);
+    gl.bindBuffer(gl.ARRAY_BUFFER, spriteVB);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(arr), gl.DYNAMIC_DRAW);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, arr.length / 10);
+  };
+  group(norm, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  group(add, gl.ONE, gl.ONE);
+  gl.disable(gl.BLEND);
+}
+
+// Demo scene, all-GL: gradient quad + spectrum bars as glow sprites +
+// prism wireframe as additive lines — rendered into srcT for the chain.
+function glDemoScene(t) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, srcT.fbo);
+  gl.viewport(0, 0, W, H);
+  const bg = glProgram('demobg');
+  gl.useProgram(bg);
+  gl.uniformMatrix3fv(gl.getUniformLocation(bg, 'uMatrix'), false, IDENTITY3);
+  gl.uniform2f(gl.getUniformLocation(bg, 'uRes'), W, H);
+  gl.bindVertexArray(quadVao);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  const m = Math.min(W, H), cx = W / 2, cy = H / 2;
+  const bars = [];
+  const N = 96, R = m * 0.26;
+  for (let i = 0; i < N; i++) {
+    const v = spectrum ? spectrum[2 + Math.floor(Math.pow(i / N, 1.8) * 360)] / 255 : 0;
+    const ang = (i / N) * TAU + t * 0.12;
+    const len = Math.pow(v, 1.4) * m * 0.22 + 2;
+    const [r, g, b] = hslToRgb(((i / N) * 360 + t * 24) % 360, 1, 0.62);
+    const mid = R + len / 2;
+    bars.push(cx + Math.cos(ang) * mid, cy + Math.sin(ang) * mid,
+              len + 6, 8, ang, r, g, b, 0.75, 2);
+  }
+  const core = (3 + bassS * m * 0.03) * 6;          // glowing core follows the bass
+  bars.push(cx, cy, core, core, 0, 1, 1, 1, 1, 0);
+  glSprites(bars, [], srcT.fbo);
+
+  // rotating triangular prism wireframe (same projection as the 2D scene)
+  const s = m * (0.13 + 0.05 * bassS + 0.04 * pulses.zoom);
+  const ry = t * 0.5, rx = 0.45 + Math.sin(t * 0.21) * 0.3;
+  const pts = [];
+  for (const z of [-0.62, 0.62]) {
+    for (let i = 0; i < 3; i++) {
+      const a = ry * 0.55 + i * TAU / 3;
+      const x = Math.cos(a), y = Math.sin(a) * 1.12;
+      const y2 = y * Math.cos(rx) - z * Math.sin(rx);
+      const z2 = y * Math.sin(rx) + z * Math.cos(rx);
+      const x2 = x * Math.cos(ry) + z2 * Math.sin(ry);
+      const z3 = -x * Math.sin(ry) + z2 * Math.cos(ry);
+      const pr = 3 / (3 + z3);
+      pts.push([cx + x2 * pr * s, cy + y2 * pr * s]);
+    }
+  }
+  const edges = [[0, 1], [1, 2], [2, 0], [3, 4], [4, 5], [5, 3], [0, 3], [1, 4], [2, 5]];
+  const [lr, lg, lb] = hslToRgb((t * 40) % 360, 1, 0.68);
+  const verts = [];
+  for (const [a, b] of edges) {
+    verts.push(pts[a][0], pts[a][1], lr, lg, lb, 1,
+               pts[b][0], pts[b][1], lr, lg, lb, 1);
+  }
+  const lp = glProgramRaw('_line', LINE_VS, LINE_FS);
+  gl.useProgram(lp);
+  gl.uniform2f(gl.getUniformLocation(lp, 'uRes'), W, H);
+  gl.bindVertexArray(lineVao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, lineVB);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.DYNAMIC_DRAW);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE);
+  gl.drawArrays(gl.LINES, 0, verts.length / 6);
+  gl.disable(gl.BLEND);
 }
 const glOk = glInit();
 
@@ -2353,7 +2626,6 @@ function frame(ms) {
   }
   prevFrameMs = ms;
   const t0 = performance.now();
-  drawSource(ms / 1000);
   ageScene(dt);
   // letterbox easing lived in the 2D render; the plan consumes the position
   lbPos += ((A('letterbox-snap') && lbOpen ? 1 : 0) - lbPos) * Math.min(1, dt * 14);
@@ -2368,6 +2640,10 @@ function frame(ms) {
                  stutterBack: ringFill >= 6 ? 1 + ((ms / 50) | 0) % 5 : 0 },
   });
   glRender(plan, ms / 1000, ms);
+  if (gl && !glLost) {
+    const sp = packSprites(particles, bolts, glyphs);
+    glSprites(sp.add, sp.norm);
+  }
   for (const key of Object.keys(pulses)) {
     pulses[key] = decayPulse(pulses[key], dt * 1000, HALF_LIFE[key] ?? 150);
   }

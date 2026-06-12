@@ -61,3 +61,14 @@
   are live. Noise tile (the existing generated canvas) uploads once as a
   REPEAT texture on unit 2. lbPos easing stayed in the frame loop;
   starburst/shockwave became analytic ray/ring functions. 110 green.
+
+## Slice 8 — sprite layer + GL demo scene
+- Status: done
+- Notes: `packSprites`/`hslToRgb` pure (stride-10 instances; additive
+  group = the 2D 'lighter' set, premultiplied normal group = confetti);
+  one atlas canvas rasterized once (circle/rect/bar/8 glyphs); instanced
+  TRIANGLE_STRIP draws. Video now uploads straight to GL — letterboxing
+  moved into srcTexAt(uFit) — and the demo scene is all-GL (gradient
+  pass, glow-sprite spectrum bars, prism wireframe via gl.LINES into the
+  srcT target). drawSource/drawDemoScene joined the dead 2D code for
+  slice 9 deletion. 116 green.
