@@ -1038,6 +1038,78 @@ test('structure: overlay GLSL exists and samples the noise texture', () => {
     'static noise tile uploaded once from the generated canvas');
 });
 
+// ---------- webgl slice 8 — sprite layer + GL demo scene ----------
+
+test('hslToRgb: primaries and a half-lit teal', () => {
+  const { hslToRgb } = loadLogic(HTML);
+  assert.deepEqual(hslToRgb(0, 1, 0.5), [1, 0, 0]);
+  assert.deepEqual(hslToRgb(120, 1, 0.5), [0, 1, 0]);
+  const teal = hslToRgb(180, 1, 0.25);
+  assert.ok(Math.abs(teal[0]) < 1e-9 && Math.abs(teal[1] - 0.5) < 1e-9
+         && Math.abs(teal[2] - 0.5) < 1e-9);
+});
+
+// stride: [cx, cy, w, h, rot, r, g, b, alpha, cell] × instances
+const STRIDE = 10;
+
+test('packSprites: a burst particle becomes one additive soft-circle instance', () => {
+  const { packSprites } = loadLogic(HTML);
+  const p = { kind: 'burst', x: 100, y: 80, r: 2, age: 0.25, life: 1, hue: 0, vx: 0, vy: 0 };
+  const { add, norm } = packSprites([p], [], []);
+  assert.equal(add.length, STRIDE);
+  assert.equal(norm.length, 0);
+  const f = 0.75;
+  assert.equal(add[0], 100);
+  assert.equal(add[1], 80);
+  assert.ok(Math.abs(add[2] - 2 * (0.5 + f) * 6) < 1e-9, 'glow skirt sizing');
+  assert.ok(Math.abs(add[8] - f * 0.9) < 1e-9, 'alpha fades with age');
+  assert.equal(add[9], 0);                                  // cell 0 = soft circle
+});
+
+test('packSprites: confetti is a normal-blend rotated rect', () => {
+  const { packSprites } = loadLogic(HTML);
+  const p = { kind: 'confetti', x: 10, y: 20, r: 4, rot: 1.2, age: 0.5, life: 2,
+              hue: 200, vx: 0, vy: 0 };
+  const { add, norm } = packSprites([p], [], []);
+  assert.equal(add.length, 0);
+  assert.equal(norm.length, STRIDE);
+  assert.equal(norm[2], 8);                                 // w = 2r
+  assert.ok(Math.abs(norm[3] - 4.4) < 1e-9);                // h = 1.1r
+  assert.equal(norm[4], 1.2);
+  assert.equal(norm[9], 1);                                 // cell 1 = solid rect
+});
+
+test('packSprites: bolt segments become oriented additive bars', () => {
+  const { packSprites } = loadLogic(HTML);
+  const bolt = { segs: [[0, 0, 30, 40], [30, 40, 30, 100]], age: 0.07, life: 0.28 };
+  const { add } = packSprites([], [bolt], []);
+  assert.equal(add.length, 2 * STRIDE);
+  assert.equal(add[0], 15);                                 // first seg midpoint
+  assert.equal(add[1], 20);
+  assert.ok(Math.abs(add[2] - 58) < 1e-9, 'length 50 + glow pad 8');
+  assert.ok(Math.abs(add[4] - Math.atan2(40, 30)) < 1e-9);
+  assert.equal(add[9], 2);                                  // cell 2 = soft bar
+});
+
+test('packSprites: glyphs pop from their atlas cell', () => {
+  const { packSprites } = loadLogic(HTML);
+  const g = { ci: 3, x: 50, y: 60, size: 100, age: 0.3, life: 0.6, hue: 305 };
+  const { add } = packSprites([], [], [g]);
+  const f = 0.5, pop = 1.35 - f * 0.35;
+  assert.ok(Math.abs(add[2] - 100 * pop) < 1e-9);
+  assert.equal(add[8], f);
+  assert.equal(add[9], 3 + 3);                              // glyph cells start at 3
+});
+
+test('structure: instanced sprite layer, direct video upload, GL demo scene', () => {
+  const app = appScript();
+  assert.ok(app.includes('drawArraysInstanced'), 'instanced sprite draws');
+  assert.ok(app.includes('gl.ONE, gl.ONE'), 'additive blend group');
+  assert.match(app, /texImage2D\(gl\.TEXTURE_2D, 0, gl\.RGBA, gl\.RGBA, gl\.UNSIGNED_BYTE, video\)/,
+    'video uploads straight to GL — no 2D canvas relay');
+  assert.ok(app.includes('gl.LINES'), 'demo scene bars/prism as GL lines');
+});
+
 // ---------- webgl slice 3 — GL skeleton (structural) ----------
 
 test('structure: main canvas runs WebGL2, not 2d', () => {
