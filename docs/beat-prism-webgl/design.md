@@ -48,7 +48,7 @@
 
 ### Pass plan is pure, tested logic
 **Decision:** A new pure function in the `__logic` block with an explicit contract:
-`buildPassPlan(input)` where `input = { active: Set<effectId>, pulses: Record<effectId, number 0..1>, bass: number 0..1, treble: number 0..1, tSec: number, scheduled: { mirrorOn, tileN, lbOpen, frozen, stutterBack } }` → ordered `Array<{ id: effectId, program: programKey, uniforms: Record<string, number|number[]> }>`.
+`buildPassPlan(input)` where `input = { active: Set<effectId>, pulses: Record<effectId, number 0..1>, bass: number 0..1, treble: number 0..1, tSec: number, hueBase: degrees, joltDir: ±1, shake: [x, y] clip units, scheduled: { mirrorOn, tileN, lbOpen, lbPos, frozen, stutterBack } }` → ordered `Array<{ id: effectId, program: programKey, uniforms: Record<string, number|number[]>, members?: effectId[] }>`. (`hueBase`/`joltDir`/`shake`/`lbPos` joined the contract in slice 2 — they are app state the 2D pipeline already carried.)
 It encodes render order (geometry → color → temporal → overlay), pulse gating (skip passes whose pulse decayed below threshold), and color-pass folding (light color effects collapse into ONE shader pass with combined uniforms, replacing the old `ctx.filter` stack). Shader GLSL itself is exercised by structure tests only (compiles deferred to the browser).
 **Rationale:** Mirrors the repo convention — DOM-free math in `__logic`, Node-tested; the pass plan is exactly the "tighter pipeline" and deserves the strongest tests.
 

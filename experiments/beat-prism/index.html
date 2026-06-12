@@ -490,28 +490,121 @@ function passLive(effect, input) {
   return true;
 }
 
+// Combined transfer-curve uniforms for the single folded color pass —
+// the GL replacement for the old ctx.filter string stack. Multiplicative
+// members compose; neutral values mean "member not live". levels > 0
+// switches on true per-pixel posterize (GL-native upgrade).
+function colorFoldUniforms(members, pulses, ctx) {
+  const u = { brightness: 1, saturation: 1, hue: 0, gray: 0,
+              contrast: 1, invert: 0, flash: 0, levels: 0 };
+  const has = id => members.includes(id);
+  const P = id => pulses[id] ?? 0;
+  if (has('hue-spin')) u.hue = ctx.hueBase + P('hue-spin') * 45;
+  if (has('sat-pump')) u.saturation *= 1 + P('sat-pump') * 2.6;
+  if (has('bleach-burn')) {
+    u.brightness *= 1 + P('bleach-burn') * 1.5;
+    u.saturation *= 1 - P('bleach-burn') * 0.75;
+  }
+  if (has('gamma-flicker')) u.brightness *= 0.72 + ctx.treble * 1.8 + 0.18 * Math.sin(ctx.tSec * 39);
+  if (has('color-drain')) u.gray = P('color-drain');
+  if (has('posterize')) {
+    u.saturation *= 1.5;
+    u.contrast *= 2.2 + posterizeCurve(ctx.bass, 4) * 3;
+    u.brightness *= 1.1;
+    u.levels = 6;
+  }
+  if (has('invert-strobe')) u.invert = P('invert-strobe') > 0.5 ? 1 : 0;
+  if (has('flash')) u.flash = P('flash') * 0.38;
+  return u;
+}
+
+// Per-member intensities for the single folded overlay pass. Time-driven
+// motion (vhs scroll, starburst rotation) happens in the shader off uT;
+// these uniforms carry only the strengths.
+function overlayFoldUniforms(members, pulses, ctx) {
+  const u = { glow: 0, scanlines: 0, vhs: 0, grain: 0,
+              vignette: 0, letterbox: 0, starburst: 0, shockwave: 0 };
+  const has = id => members.includes(id);
+  const P = id => pulses[id] ?? 0;
+  if (has('glow')) u.glow = Math.min(1, ctx.treble * 2.2);
+  if (has('scanlines')) u.scanlines = 0.75;
+  if (has('vhs-band')) u.vhs = 1;
+  if (has('grain-burst')) u.grain = P('grain-burst') * 0.5;
+  if (has('vignette-pump')) u.vignette = P('vignette-pump');
+  if (has('letterbox-snap')) u.letterbox = ctx.lbPos ?? 0;
+  if (has('starburst')) u.starburst = P('starburst');
+  if (has('shockwave')) u.shockwave = P('shockwave');
+  return u;
+}
+
+// Column-major 3×3 multiply: result applies B first, then A.
+function mat3mul(A, B) {
+  const r = new Array(9);
+  for (let c = 0; c < 3; c++) {
+    for (let w = 0; w < 3; w++) {
+      r[c * 3 + w] = A[w] * B[c * 3] + A[3 + w] * B[c * 3 + 1] + A[6 + w] * B[c * 3 + 2];
+    }
+  }
+  return r;
+}
+
+// All affine geometry pulses composed into one sampling matrix (clip
+// space, origin at center — centering is free in GL). Same operation
+// order as the 2D ctx-transform stack: shake outermost, then zoom, jolt,
+// spin-zoom, squash, skew, mirror. Amplitudes are parity with the 2D
+// pipeline (shake-style pulses stay subtle, per design emphasis).
+function geometryMatrix({ pulses, active, joltDir, mirrorOn, shake }) {
+  const live = id => active.has(id) && (pulses[id] ?? 0) > PASS_GATE;
+  const P = id => pulses[id] ?? 0;
+  const rot = a => [Math.cos(a), Math.sin(a), 0, -Math.sin(a), Math.cos(a), 0, 0, 0, 1];
+  const scale = (x, y) => [x, 0, 0, 0, y, 0, 0, 0, 1];
+  // translation lives in m[6], m[7] (column-major)
+  let m = [1, 0, 0, 0, 1, 0, shake?.[0] ?? 0, shake?.[1] ?? 0, 1];
+  if (live('zoom')) m = mat3mul(m, scale(1 + P('zoom') * 0.07, 1 + P('zoom') * 0.07));
+  if (live('rotate-jolt')) m = mat3mul(m, rot(joltDir * P('rotate-jolt') * 0.12));
+  if (live('spin-zoom')) {
+    const z = 1 + P('spin-zoom') * 0.4;
+    m = mat3mul(m, mat3mul(rot(P('spin-zoom') * 0.55), scale(z, z)));
+  }
+  if (live('squash')) m = mat3mul(m, scale(1 + P('squash') * 0.2, 1 - P('squash') * 0.24));
+  if (live('skew-tilt')) {
+    const k = joltDir * P('skew-tilt');
+    m = mat3mul(m, [1, k * 0.14, 0, k * 0.3, 1, 0, 0, 0, 1]);
+  }
+  if (active.has('mirror-flip') && mirrorOn) m = mat3mul(m, scale(-1, 1));
+  return m;
+}
+
 // Ordered pass list from frame state. Pure and deterministic — registry
 // order within each section. input: { active: Set<id>, pulses: {id→0..1},
-// bass, treble: 0..1, tSec, scheduled: { mirrorOn, tileN, lbOpen, frozen,
-// stutterBack } }. Returns [{ id, program, uniforms, members? }].
+// bass, treble: 0..1, tSec, hueBase, joltDir, shake: [x,y], scheduled:
+// { mirrorOn, tileN, lbOpen, lbPos, frozen, stutterBack } }.
+// Returns [{ id, program, uniforms, members? }].
 function buildPassPlan(input) {
   const live = id => {
     const e = FX_REGISTRY.find(f => f.id === id);
     return e ? passLive(e, input) : false;
   };
-  const fold = (id, memberIds) => {
+  const fold = (id, memberIds, mkUniforms) => {
     const members = memberIds.filter(live);
-    return members.length ? [{ id, program: id, uniforms: {}, members }] : [];
+    return members.length
+      ? [{ id, program: id, uniforms: mkUniforms(members), members }] : [];
   };
   const solo = ids => ids.filter(live).map(id => ({ id, program: id, uniforms: {} }));
   const byCat = cat => FX_REGISTRY.filter(e => e.cat === cat).map(e => e.id);
   const colorHeavy = byCat('color').filter(id => !COLOR_FOLD.includes(id));
+  const matrix = geometryMatrix({
+    pulses: input.pulses, active: input.active, joltDir: input.joltDir ?? 1,
+    mirrorOn: input.scheduled?.mirrorOn ?? false, shake: input.shake ?? [0, 0],
+  });
   return [
-    { id: 'base', program: 'base', uniforms: {} },
-    ...fold('color', COLOR_FOLD),
+    { id: 'base', program: 'base', uniforms: { matrix } },
+    ...fold('color', COLOR_FOLD, members => colorFoldUniforms(members, input.pulses,
+        { bass: input.bass, treble: input.treble, tSec: input.tSec, hueBase: input.hueBase ?? 0 })),
     ...solo(colorHeavy),
     ...solo(byCat('temporal')),
-    ...fold('overlay', OVERLAY_FOLD),
+    ...fold('overlay', OVERLAY_FOLD, members => overlayFoldUniforms(members, input.pulses,
+        { treble: input.treble, tSec: input.tSec, lbPos: input.scheduled?.lbPos ?? 0 })),
   ];
 }
 
@@ -575,7 +668,8 @@ globalThis.__logic = {
   spectralFlux, bandEnergy, adaptiveThreshold, stepOnset, estimateBpm, decayPulse,
   FX_REGISTRY, mulberry32, latencyMs, stepGrid, gridEvents, dealHand,
   sliceOffsets, wedgeAngles, posterizeCurve, ringIndex, formatTime, seekTarget,
-  snapRefreshMs, missedVsync, frameStats, buildPassPlan,
+  snapRefreshMs, missedVsync, frameStats,
+  buildPassPlan, colorFoldUniforms, overlayFoldUniforms, geometryMatrix, mat3mul,
 };
 })();
 </script>
