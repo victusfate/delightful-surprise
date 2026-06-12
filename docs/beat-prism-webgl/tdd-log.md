@@ -33,3 +33,12 @@
   rides any variant. Kaleidoscope upgraded to true aspect-corrected polar
   mirroring (per the color/perceptual emphasis). `sliceSeed` joined the
   plan input. glRender now feeds frame-global uRes/uT. 101 green.
+
+## Slice 5 — color passes
+- Status: done
+- Notes: folded `color` transfer (brightness/saturation/hueRotate/gray/
+  contrast/true-posterize/invert/flash in one shader — the ctx.filter
+  stack replacement) + heavy programs. GL-native upgrades landed here per
+  the emphasis: real RGB-split chroma, true channel rotation, palette
+  thermal, edge-difference neon. `SOLO_UNIFORMS` synthesizers; chroma
+  pass omitted when bass-driven split is sub-pixel. 104 green.

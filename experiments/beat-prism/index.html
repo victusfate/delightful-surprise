@@ -494,11 +494,21 @@ const OVERLAY_FOLD = ['glow', 'scanlines', 'vhs-band', 'grain-burst',
 
 // Is this effect contributing pixels right now? Pulse effects must be
 // above the gate; continuous and scheduled effects ride activation.
+// Chroma is energy-driven: below ~half a pixel of split (bass·30 ≤ 0.6,
+// the 2D pipeline's own gate) the pass isn't worth dispatching.
 function passLive(effect, input) {
   if (!input.active.has(effect.id)) return false;
+  if (effect.id === 'chroma') return input.bass * 30 > 0.6;
   if (effect.kind === 'pulse') return (input.pulses[effect.id] ?? 0) > PASS_GATE;
   return true;
 }
+
+// Uniform synthesizers for solo (non-folded) passes that need more than
+// frame globals; absent entries mean the shader runs on uT/uRes alone.
+const SOLO_UNIFORMS = {
+  'channel-swap': input => ({ mix: Math.min(1, (input.pulses['channel-swap'] ?? 0) * 1.2) }),
+  chroma: input => ({ amount: input.bass * 30 }),
+};
 
 // Combined transfer-curve uniforms for the single folded color pass —
 // the GL replacement for the old ctx.filter string stack. Multiplicative
@@ -600,7 +610,8 @@ function buildPassPlan(input) {
     return members.length
       ? [{ id, program: id, uniforms: mkUniforms(members), members }] : [];
   };
-  const solo = ids => ids.filter(live).map(id => ({ id, program: id, uniforms: {} }));
+  const solo = ids => ids.filter(live).map(id =>
+    ({ id, program: id, uniforms: SOLO_UNIFORMS[id]?.(input) ?? {} }));
   const byCat = cat => FX_REGISTRY.filter(e => e.cat === cat).map(e => e.id);
   const colorHeavy = byCat('color').filter(id => !COLOR_FOLD.includes(id));
   const matrix = geometryMatrix({
@@ -1847,6 +1858,88 @@ void main() {
   vec2 uv = vUV;
   uv.y += uOffsets[clamp(i, 0, 13)] / uRes.y;
   outColor = vec4(texture(uTex, pixelUV(clamp(uv, 0.0, 1.0))).rgb, 1.0);
+}`,
+
+  // ── color: the folded transfer pass + heavy programs ──
+  // (the upgrade-budget family: true per-pixel posterize, real RGB-split
+  // chroma, actual channel rotation, palette thermal — per design.md)
+  color: `#version 300 es${FS_COMMON}
+uniform float uBrightness, uSaturation, uHue, uGray, uContrast, uInvert, uFlash, uLevels;
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+vec3 hueRotate(vec3 c, float deg) {
+  float a = radians(deg), ca = cos(a), sa = sin(a);
+  mat3 m = mat3(
+    0.213 + ca * 0.787 - sa * 0.213, 0.715 - ca * 0.715 - sa * 0.715, 0.072 - ca * 0.072 + sa * 0.928,
+    0.213 - ca * 0.213 + sa * 0.143, 0.715 + ca * 0.285 + sa * 0.140, 0.072 - ca * 0.072 - sa * 0.283,
+    0.213 - ca * 0.213 - sa * 0.787, 0.715 - ca * 0.715 + sa * 0.715, 0.072 + ca * 0.928 + sa * 0.072);
+  return c * m;
+}
+void main() {
+  vec3 c = texture(uTex, vUV).rgb;
+  c *= uBrightness;
+  c = mix(vec3(dot(c, LUMA)), c, uSaturation);
+  if (abs(uHue) > 0.01) c = hueRotate(c, uHue);
+  c = mix(c, vec3(dot(c, LUMA)), uGray);
+  c = (c - 0.5) * uContrast + 0.5;
+  if (uLevels > 0.5) c = floor(clamp(c, 0.0, 1.0) * (uLevels - 1.0) + 0.5) / (uLevels - 1.0);
+  c = mix(c, 1.0 - c, uInvert);
+  c += uFlash * vec3(0.81, 0.91, 1.0);
+  outColor = vec4(c, 1.0);
+}`,
+
+  duotone: `#version 300 es${FS_COMMON}
+void main() {
+  float l = dot(texture(uTex, vUV).rgb, vec3(0.2126, 0.7152, 0.0722));
+  l = clamp((l - 0.5) * 1.15 + 0.5, 0.0, 1.0);
+  vec3 c = l * vec3(1.0, 0.24, 0.94);              // shadows → magenta
+  c += 0.2 * vec3(0.024, 0.137, 0.188);            // blacks lift toward deep cyan
+  outColor = vec4(c, 1.0);
+}`,
+
+  thermal: `#version 300 es${FS_COMMON}
+void main() {
+  float l = dot(texture(uTex, vUV).rgb, vec3(0.2126, 0.7152, 0.0722));
+  l = clamp((l - 0.5) * 1.25 + 0.55, 0.0, 1.0);
+  vec3 c = vec3(clamp(l * 2.4, 0.0, 1.0), pow(l, 1.8), pow(l, 4.0) * 0.6);
+  outColor = vec4(c, 1.0);
+}`,
+
+  'sepia-ghost': `#version 300 es${FS_COMMON}
+vec3 sep(vec3 c) {
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  return l * vec3(1.07, 0.74, 0.43);
+}
+void main() {
+  vec3 c = sep(texture(uTex, vUV).rgb) * 1.05;
+  c += 0.28 * sep(texture(uTex, vUV - vec2(9.0 / uRes.x, 0.0)).rgb);
+  outColor = vec4(c, 1.0);
+}`,
+
+  'channel-swap': `#version 300 es${FS_COMMON}
+uniform float uMix;
+void main() {
+  vec3 c = texture(uTex, vUV).rgb;
+  outColor = vec4(mix(c, c.gbr, uMix), 1.0);       // true channel rotation
+}`,
+
+  'neon-edge': `#version 300 es${FS_COMMON}
+void main() {
+  vec3 a = texture(uTex, vUV).rgb;
+  vec3 b = texture(uTex, vUV + vec2(2.0, 1.0) / uRes).rgb;
+  vec3 e = abs(a - b) * 6.0;                        // real edge difference
+  vec3 c = a * 0.18 + e * vec3(1.6, 2.3, 2.6);
+  outColor = vec4(c, 1.0);
+}`,
+
+  chroma: `#version 300 es${FS_COMMON}
+uniform float uAmount;
+void main() {
+  float dx = uAmount / uRes.x;
+  vec3 c;
+  c.r = texture(uTex, clamp(vUV + vec2(dx, 0.0), 0.0, 1.0)).r;
+  c.g = texture(uTex, vUV).g;
+  c.b = texture(uTex, clamp(vUV - vec2(dx, 0.0), 0.0, 1.0)).b;
+  outColor = vec4(c, 1.0);                          // true RGB split
 }`,
 };
 
