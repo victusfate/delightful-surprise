@@ -1015,6 +1015,29 @@ test('structure: temporal GLSL programs and feedback capture exist', () => {
   assert.ok(app.includes('copyTexSubImage2D'), 'feedback/ring capture via texture copy');
 });
 
+// ---------- webgl slice 7 — overlay pass ----------
+
+test('buildPassPlan: overlay fold carries eased letterbox and pulse strengths', () => {
+  const { buildPassPlan } = loadLogic(HTML);
+  const plan = buildPassPlan(planInput({
+    active: new Set(['letterbox-snap', 'shockwave']),
+    pulses: { shockwave: 0.4 },
+    scheduled: { mirrorOn: false, tileN: 2, lbOpen: true, lbPos: 0.8,
+                 frozen: false, stutterBack: 0 },
+  }));
+  const ov = plan.find(p => p.id === 'overlay');
+  assert.equal(ov.uniforms.letterbox, 0.8);
+  assert.equal(ov.uniforms.shockwave, 0.4);
+});
+
+test('structure: overlay GLSL exists and samples the noise texture', () => {
+  const app = appScript();
+  assert.match(app, /overlay:\s*`#version 300 es/, 'overlay shader');
+  assert.ok(app.includes('uNoise'), 'noise sampler uniform');
+  assert.ok(app.includes('texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, noiseCv)'),
+    'static noise tile uploaded once from the generated canvas');
+});
+
 // ---------- webgl slice 3 — GL skeleton (structural) ----------
 
 test('structure: main canvas runs WebGL2, not 2d', () => {
